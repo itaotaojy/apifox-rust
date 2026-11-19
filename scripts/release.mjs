@@ -1,35 +1,33 @@
 #!/usr/bin/env node
 /**
- * Miyo 发版助手（零依赖，Node >= 20）。
+ * Miyo 发版 / 打包助手（零依赖，Node >= 20）。
  *
- * 版本号单一事实源：frontend/src-tauri/tauri.conf.json（updater 以它为当前客户端版本）。
- * 本脚本把它同步到其余位置，消除手工改多处配置的负担：
+ * 版本号单一事实源：frontend/src-tauri/tauri.conf.json（updater 以它为当前客户端版本），
+ * 同步到 frontend/package.json（+ package-lock）与 frontend/src-tauri/Cargo.toml。
  *
- *   1. frontend/src-tauri/tauri.conf.json
- *   2. frontend/package.json            （+ package-lock.json 经 npm 同步）
- *   3. frontend/src-tauri/Cargo.toml    （仅 miyo 包自身的 version 行）
+ *   node scripts/release.mjs release <X.Y.Z|patch|minor|major> [--skip-checks] [--publish]
+ *       升版本 → lint/test/build → 提交推送 → 打 tag 推送，触发 GitHub Actions 多平台构建；
+ *       --publish 等待构建完成后自动把 Draft Release 转正（需本机已登录 gh）
+ *   node scripts/release.mjs build [X.Y.Z|patch|minor|major] [--no-offline]
+ *       本地打包当前平台（frontend 下即 npm run build:release），带版本参数时先升版本；
+ *       Windows 另出内嵌 WebView2 的 *-setup-offline.exe；产物在 target/release/bundle/
+ *   node scripts/release.mjs bump <X.Y.Z|patch|minor|major>
+ *       仅同步版本文件
  *
- * 用法：
- *   node scripts/release.mjs release patch [--skip-checks] [--publish]   # ⭐ 一条命令发版
- *   node scripts/release.mjs bump <X.Y.Z | patch | minor | major>        # 仅同步版本文件
- *   node scripts/release.mjs check                                       # 校验各处版本一致
- *   node scripts/release.mjs tag [--push]                                # 校验后打 v{version} 标签
- *
- * 发版完整流程（release 子命令已自动串联 ①②③④）：
- *   node scripts/release.mjs release patch
- *     ① bump：同步三处版本文件 + package-lock
- *     ② 本地检查：lint / test / build（--skip-checks 可跳过）
- *     ③ 提交并推送当前分支（chore(release): vX.Y.Z）
- *     ④ 打 v{version} 标签并推送 → 触发 GitHub Actions 多平台构建
- *   加 --publish 时：轮询等待构建完成后自动把 Draft Release 转正（需本机安装并登录 gh）。
+ * 签名私钥（build）：TAURI_SIGNING_PRIVATE_KEY 环境变量 > ~/.tauri/miyo-updater.key；
+ * 都没有时跳过 updater 产物（安装包照常生成）。CI 打包仍走 scripts/package-tauri.sh。
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { execSync, spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const FRONTEND = path.join(ROOT, 'frontend')
+const BUNDLE = path.join(ROOT, 'target', 'release', 'bundle')
+const KEY_FILE = path.join(homedir(), '.tauri', 'miyo-updater.key')
 
 /** 相对仓库根的三个版本文件路径。 */
 export const VERSION_FILES = {
@@ -140,196 +138,187 @@ export function checkConsistency(root) {
 
 // ---------- CLI ----------
 
-function sh(cmd, opts = {}) {
-  execSync(cmd, { stdio: 'inherit', cwd: ROOT, ...opts })
+function sh(cmd, cwd = ROOT, env = process.env) {
+  execSync(cmd, { stdio: 'inherit', cwd, env })
 }
 
 function gitOut(args) {
   return execSync(`git ${args}`, { cwd: ROOT, encoding: 'utf8' }).trim()
 }
 
-/** 本地发布前检查：lint / test / build（任一失败抛错中止）。 */
-function runChecks() {
-  const checks = [
-    ['lint', 'npm run lint'],
-    ['test', 'npm test'],
-    ['build', 'npm run build'],
-  ]
-  for (const [name, cmd] of checks) {
-    console.log(`\n▶ 检查 ${name}…`)
-    sh(cmd, { cwd: path.join(ROOT, 'frontend') })
-    console.log(`✓ ${name} 通过`)
-  }
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-/**
- * 等待 tag 触发的 Release 构建结束并把 Draft 转正（需 gh CLI 已登录）。
- * 轮询上限约 40 分钟；gh 缺失时仅打印提示不阻塞。
- */
-function watchAndPublish(tag) {
-  let gh
-  try {
-    gh = execSync('command -v gh', { encoding: 'utf8' }).trim()
-  } catch {
-    gh = ''
+function bump(arg) {
+  const current = readJsonVersion(path.join(ROOT, VERSION_FILES.conf))
+  const target = resolveTargetVersion(current, arg)
+  syncVersions(ROOT, target)
+  sh('npm install --package-lock-only', FRONTEND)
+  console.log(`✓ 版本已同步：${current} → ${target}`)
+  return target
+}
+
+/** 一条命令发版：bump → checks → commit/push → tag/push（→ 可选 publish）。 */
+function releaseFlow(arg, flags) {
+  const dirty = gitOut('status --porcelain')
+  if (dirty) throw new Error(`工作区有未提交改动，请先处理干净再发版：\n${dirty}`)
+  const branch = gitOut('rev-parse --abbrev-ref HEAD')
+
+  const tag = `v${bump(arg)}`
+
+  // 检查失败则保留版本改动供修复，修好后重跑本命令
+  if (flags.has('--skip-checks')) {
+    console.log('跳过本地检查（--skip-checks）')
+  } else {
+    for (const name of ['lint', 'test', 'build']) {
+      console.log(`\n▶ 检查 ${name}…`)
+      sh(`npm run ${name}`, FRONTEND)
+    }
   }
-  if (!gh) {
+
+  sh('git add -A')
+  sh(`git commit -m "chore(release): ${tag}"`)
+  sh('git push')
+  sh(`git tag -a ${tag} -m "Miyo ${tag}"`)
+  sh(`git push origin ${tag}`)
+  console.log(`\n✓ 已推送 ${branch} 与标签 ${tag}，GitHub Actions 开始构建`)
+
+  if (flags.has('--publish')) watchAndPublish(tag)
+  else console.log('构建完成后到 GitHub Release 页将 Draft 点 Publish（或加 --publish 自动完成）')
+}
+
+/** 等待 tag 触发的 Release 构建结束并把 Draft 转正（需 gh CLI 已登录），最长约 40 分钟。 */
+function watchAndPublish(tag) {
+  if (spawnSync('gh', ['--version'], { stdio: 'ignore' }).status !== 0) {
     console.log('\nℹ 未检测到 gh CLI：构建完成后请到 GitHub Release 页手动点 Publish Draft')
     return
   }
-  console.log(`\n⏳ 等待 ${tag} 的多平台构建完成（最长 40 分钟）…`)
+  console.log(`\n⏳ 等待 ${tag} 的多平台构建出现（最长 40 分钟）…`)
   const deadline = Date.now() + 40 * 60 * 1000
   let runId = null
-  while (Date.now() < deadline) {
+  while (!runId && Date.now() < deadline) {
     try {
-      const out = execSync(
-        `gh run list --workflow=release.yml --limit 10 --json databaseId,headBranch,status,event`,
-        { cwd: ROOT, encoding: 'utf8' },
-      )
-      const runs = JSON.parse(out).filter((r) => r.headBranch === tag && r.event === 'push')
-      if (runs.length && runs[0].status === 'completed') break
-      if (runs.length) runId = runs[0].databaseId
+      const out = execSync('gh run list --workflow=release.yml --limit 10 --json databaseId,headBranch,event', {
+        cwd: ROOT,
+        encoding: 'utf8',
+      })
+      runId = JSON.parse(out).find((r) => r.headBranch === tag && r.event === 'push')?.databaseId ?? null
     } catch {
       /* gh 偶发网络错误：忽略本轮 */
     }
-    execSync('sleep 30')
+    if (!runId) sleep(30_000)
   }
   if (!runId) {
     console.log('ℹ 未匹配到该 tag 的运行记录，稍后请手动检查并发布 Draft')
     return
   }
+  // watch 失败（非 0）会抛错，草稿保留供排查
   sh(`gh run watch ${runId} --exit-status`)
-  // watch 成功（exit 0）后把草稿转正；失败则保留草稿供排查
-  try {
-    sh(`gh release edit ${tag} --draft=false`)
-    console.log(`\n🎉 ${tag} 已正式发布，updater 将在客户端轮询时收到更新`)
-  } catch {
-    console.error('✗ 发布转正失败，请到 Release 页检查 Draft 状态')
-    process.exitCode = 1
-  }
+  sh(`gh release edit ${tag} --draft=false`)
+  console.log(`\n🎉 ${tag} 已正式发布，updater 将在客户端轮询时收到更新`)
 }
 
-/** 一条命令发版：bump → checks → commit/push → tag/push（→ 可选 publish）。 */
-function releaseFlow(arg, flags) {
-  if (gitOut('status --porcelain')) {
-    console.error('✗ 工作区有未提交改动，请先处理干净再发版：')
-    console.error(gitOut('status --porcelain'))
-    process.exitCode = 1
-    return
+/** 本地打包当前平台；Windows 额外产出 WebView2 离线安装包。 */
+function buildFlow(arg, flags) {
+  if (arg) bump(arg)
+  const { ok, base: version, versions } = checkConsistency(ROOT)
+  if (!ok) throw new Error(`版本不一致 ${JSON.stringify(versions)}，先执行 bump 统一`)
+
+  let key = process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()
+  if (!key && existsSync(KEY_FILE)) key = readFileSync(KEY_FILE, 'utf8').trim()
+  if (!key) console.warn(`⚠ 未找到签名私钥（TAURI_SIGNING_PRIVATE_KEY 或 ${KEY_FILE}），本次跳过 updater 产物`)
+  const env = key
+    ? { ...process.env, TAURI_SIGNING_PRIVATE_KEY: key, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '' }
+    : process.env
+
+  if (!existsSync(path.join(FRONTEND, 'node_modules'))) sh('npm ci', FRONTEND)
+
+  // --config 走文件而非内联 JSON：cmd 与 bash 的引号规则不同
+  const overrideDir = path.join(ROOT, 'target', 'build-package')
+  mkdirSync(overrideDir, { recursive: true })
+  const tauriBuild = (label, bundle, extra = '') => {
+    if (!key) bundle = { ...bundle, createUpdaterArtifacts: false }
+    let cmd = `npm run tauri -- build ${extra}`
+    if (Object.keys(bundle).length) {
+      const file = path.join(overrideDir, `${label}.json`)
+      writeFileSync(file, JSON.stringify({ bundle }, null, 2))
+      cmd += ` --config "${file}"`
+    }
+    console.log(`\n> tauri build（${label}）`)
+    sh(cmd, FRONTEND, env)
   }
-  const branch = gitOut('rev-parse --abbrev-ref HEAD')
-  const current = readJsonVersion(path.join(ROOT, VERSION_FILES.conf))
-  const target = resolveTargetVersion(current, arg)
-  const tag = `v${target}`
 
-  // ① 版本同步
-  syncVersions(ROOT, target)
-  sh('npm install --package-lock-only', { cwd: path.join(ROOT, 'frontend') })
-  console.log(`① 版本已同步：${current} → ${target}`)
+  tauriBuild('default', {})
 
-  // ② 本地检查（失败则保留改动供修复，不发版）
-  if (flags.has('--skip-checks')) {
-    console.log('② 跳过本地检查（--skip-checks）')
-  } else {
+  if (process.platform === 'win32' && !flags.has('--no-offline')) {
+    const nsisDir = path.join(BUNDLE, 'nsis')
+    const exeName = readdirSync(nsisDir).find((f) => f.includes(`_${version}_`) && f.endsWith('-setup.exe'))
+    if (!exeName) throw new Error(`未在 ${nsisDir} 找到 ${version} 的 NSIS 安装包`)
+    const exePath = path.join(nsisDir, exeName)
+    const offlinePath = path.join(nsisDir, exeName.replace(/-setup\.exe$/, '-setup-offline.exe'))
+    // 离线包与默认包同名：先挪开默认包及签名，构建后无论成败都还原
+    const moved = [exePath, `${exePath}.sig`].filter((p) => existsSync(p))
+    for (const p of moved) renameSync(p, `${p}.online-bak`)
     try {
-      runChecks()
-    } catch {
-      console.error('\n✗ 本地检查未通过，已停止发版。修复后重跑本命令即可。')
-      process.exitCode = 1
-      return
+      tauriBuild('offline', { createUpdaterArtifacts: false, windows: { webviewInstallMode: { type: 'offlineInstaller' } } }, '--bundles nsis')
+      rmSync(offlinePath, { force: true })
+      renameSync(exePath, offlinePath)
+    } finally {
+      for (const p of moved) {
+        rmSync(p, { force: true })
+        renameSync(`${p}.online-bak`, p)
+      }
     }
   }
 
-  // ③ 提交 + 推送分支
-  sh('git add -A')
-  sh(`git commit -m "chore(release): ${tag}"`)
-  sh('git push')
-  console.log(`③ 已提交并推送 ${branch}`)
-
-  // ④ 打标签 + 推送（触发多平台构建）
-  sh(`git tag -a ${tag} -m "Miyo ${tag}"`)
-  sh(`git push origin ${tag}`)
-  console.log(`④ 标签 ${tag} 已推送，GitHub Actions 开始构建`)
-
-  if (flags.has('--publish')) {
-    watchAndPublish(tag)
-  } else {
-    console.log('\n下一步：构建完成后到 GitHub Release 页将 Draft 点 Publish；')
-    console.log('或使用 node scripts/release.mjs release <version> --publish 自动完成。')
+  console.log(`\n✓ Miyo v${version} 打包完成${key ? '' : '（未签名，无 updater 产物）'}：`)
+  for (const dir of existsSync(BUNDLE) ? readdirSync(BUNDLE) : []) {
+    const full = path.join(BUNDLE, dir)
+    if (!statSync(full).isDirectory()) continue
+    for (const f of readdirSync(full)) {
+      const p = path.join(full, f)
+      if (f.includes(version) && statSync(p).isFile()) {
+        console.log(`  ${path.relative(ROOT, p).padEnd(60)} ${(statSync(p).size / 1048576).toFixed(1).padStart(7)} MB`)
+      }
+    }
   }
 }
+
+const COMMANDS = {
+  release: { flags: ['--skip-checks', '--publish'], run: releaseFlow },
+  build: { flags: ['--no-offline'], run: buildFlow },
+  bump: { flags: [], run: (arg) => bump(arg) },
+}
+
+const USAGE = [
+  '用法：node scripts/release.mjs <命令>',
+  '',
+  '  release <X.Y.Z|patch|minor|major> [--skip-checks] [--publish]',
+  '       升版本 → 本地检查 → 提交推送 → 打标签触发 CI 多平台构建',
+  '  build [X.Y.Z|patch|minor|major] [--no-offline]',
+  '       本地打包当前平台（可选先升版本）；Windows 另出 WebView2 离线包',
+  '  bump <X.Y.Z|patch|minor|major>',
+  '       仅同步全部版本文件（含 package-lock）',
+].join('\n')
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2)
-  switch (cmd) {
-    case 'release': {
-      const flags = new Set(rest.filter((a) => a.startsWith('--')))
-      const arg = rest.find((a) => !a.startsWith('--'))
-      releaseFlow(arg, flags)
-      break
-    }
-    case 'bump': {
-      const current = readJsonVersion(path.join(ROOT, VERSION_FILES.conf))
-      const target = resolveTargetVersion(current, rest[0])
-      syncVersions(ROOT, target)
-      sh('npm install --package-lock-only', { cwd: path.join(ROOT, 'frontend') })
-      console.log(`\n✓ 版本已同步：${current} → ${target}`)
-      console.log('下一步：')
-      console.log('  git commit -am "chore: bump v' + target + '" && git push')
-      console.log('  node scripts/release.mjs tag --push\n')
-      break
-    }
-    case 'check': {
-      const { ok, base, versions } = checkConsistency(ROOT)
-      for (const [file, v] of Object.entries(versions)) {
-        console.log(`${ok || v === base ? '✓' : '✗'} ${file.padEnd(18)} ${v}`)
-      }
-      if (!ok) {
-        console.error('\n✗ 版本不一致，请运行 node scripts/release.mjs bump <version> 统一')
-        process.exitCode = 1
-      }
-      break
-    }
-    case 'tag': {
-      const push = rest.includes('--push')
-      const { ok, base, versions } = checkConsistency(ROOT)
-      if (!ok) {
-        console.error('✗ 各处版本不一致，先执行 bump：', JSON.stringify(versions))
-        process.exitCode = 1
-        break
-      }
-      const dirty = execSync('git status --porcelain', { cwd: ROOT, encoding: 'utf8' }).trim()
-      if (dirty) {
-        console.error('✗ 工作区有未提交改动，请先 commit（避免 tag 与产物内容不符）：')
-        console.error(dirty)
-        process.exitCode = 1
-        break
-      }
-      const tag = `v${base}`
-      sh(`git tag -a ${tag} -m "Miyo ${tag}"`)
-      console.log(`✓ 已创建标签 ${tag}`)
-      if (push) {
-        sh(`git push origin ${tag}`)
-        console.log(`✓ 已推送 ${tag} —— GitHub Actions 开始构建，完成后到 Release 页发布 Draft`)
-      } else {
-        console.log('推送到远端以触发构建：git push origin ' + tag)
-      }
-      break
-    }
-    default:
-      console.log(
-        [
-          '用法：node scripts/release.mjs <命令>',
-          '',
-          '  ⭐ release <X.Y.Z|patch|minor|major> [--skip-checks] [--publish]',
-          '       一条命令发版：升版本 → 本地检查 → 提交推送 → 打标签触发构建',
-          '       --publish 额外等待构建完成并自动发布 Draft（需 gh CLI）',
-          '  bump <X.Y.Z|patch|minor|major>   仅升级并同步全部版本文件（含 package-lock）',
-          '  check                            校验三处版本一致',
-          '  tag [--push]                     校验一致且工作区干净后打 v{version} 标签',
-        ].join('\n'),
-      )
-      if (cmd !== undefined) process.exitCode = 1
+  const command = COMMANDS[cmd]
+  const flags = new Set(rest.filter((a) => a.startsWith('--')))
+  const unknown = command ? [...flags].filter((f) => !command.flags.includes(f)) : []
+  if (!command || unknown.length) {
+    if (unknown.length) console.error(`✗ 未知参数：${unknown.join(' ')}\n`)
+    console.log(USAGE)
+    if (cmd !== undefined) process.exitCode = 1
+    return
+  }
+  try {
+    command.run(rest.find((a) => !a.startsWith('--')), flags)
+  } catch (e) {
+    // 子进程失败时其输出已直接打到终端，只补退出码
+    if (e.status == null) console.error(`✗ ${e.message}`)
+    process.exitCode = e.status || 1
   }
 }
 

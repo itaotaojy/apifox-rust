@@ -14,6 +14,7 @@ import IconButton from '@/components/ui/IconButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import {
   docsFromTree,
+  MOCK_ARRAY_MAX_COUNT,
   emptyJsonObjectNode,
   freshNid,
   parseJsonTreeWithDocs,
@@ -29,6 +30,7 @@ const props = defineProps<{
   raw: string
   docs?: Record<string, FieldDoc>
   disabled?: boolean
+  mockCounts?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -49,9 +51,10 @@ let hydrated = false
  * 自己 emit 写回的回声（text === 当前树序列化）跳过，防换树丢焦点。
  */
 watch(
-  () => props.raw,
-  (text) => {
-    if (hydrated && text === treeToPrettyJson(root.value)) return
+  () => [props.raw, props.docs] as const,
+  ([text, docs]) => {
+    if (hydrated && text === treeToPrettyJson(root.value)
+      && JSON.stringify(docs ?? {}) === JSON.stringify(docsFromTree(root.value))) return
     const next = parseJsonTreeWithDocs(text, props.docs)
     if (next) root.value = next
     hydrated = true
@@ -140,6 +143,7 @@ function removeAt(parent: JsonTreeNode, index: number): void {
 
 function changeType(node: JsonTreeNode, next: JsonTreeType): void {
   node.type = next
+  delete node.mockCount
   if (next === 'object' || next === 'array') {
     node.value = ''
     node.children = []
@@ -169,6 +173,21 @@ function setRequired(node: JsonTreeNode, required: boolean): void {
 function setValue(node: JsonTreeNode, value: string): void {
   node.value = value
   emitAll()
+}
+
+function setMockCount(node: JsonTreeNode, input: HTMLInputElement): void {
+  const count = input.value === '' ? undefined : input.valueAsNumber
+  if (count !== undefined && (!Number.isInteger(count) || count < 0 || count > MOCK_ARRAY_MAX_COUNT)) {
+    input.value = node.mockCount?.toString() ?? ''
+    return
+  }
+  node.mockCount = count
+  // 数量只写 sidecar，避免将已有多元素样本折叠成结构树中的单元素。
+  emit('update:docs', docsFromTree(root.value))
+}
+
+function hasArraySample(node: JsonTreeNode): boolean {
+  return node.children.length > 0 || (node.value !== '' && node.value !== '[]')
 }
 
 function isContainer(node: JsonTreeNode): boolean {
@@ -244,6 +263,25 @@ const canAdd = computed(() => isContainer(root.value) || root.value.type === 'ob
           spellcheck="false"
           @input="setValue(row.node, ($event.target as HTMLInputElement).value)"
         />
+        <label
+          v-if="mockCounts && row.node.type === 'array'"
+          class="jse-mock-count"
+          :title="hasArraySample(row.node) ? t('design.mockCountHint') : t('design.mockCountEmpty')"
+        >
+          <span>{{ t('design.mockCount') }}</span>
+          <input
+            class="miyo-input miyo-input-sm"
+            type="number"
+            min="0"
+            :max="MOCK_ARRAY_MAX_COUNT"
+            step="1"
+            :value="row.node.mockCount ?? ''"
+            :placeholder="'—'"
+            :aria-label="t('design.mockCount')"
+            :disabled="disabled || !hasArraySample(row.node)"
+            @change="setMockCount(row.node, $event.target as HTMLInputElement)"
+          />
+        </label>
         <IconButton
           v-if="isContainer(row.node)"
           name="plus"
@@ -286,6 +324,7 @@ const canAdd = computed(() => isContainer(root.value) || root.value.type === 'ob
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-x: auto;
 }
 
 .jse-empty {
@@ -354,6 +393,19 @@ const canAdd = computed(() => isContainer(root.value) || root.value.type === 'ob
 .jse-desc {
   flex: 1;
   min-width: 80px;
+}
+
+.jse-mock-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+.jse-mock-count input {
+  width: 70px;
 }
 
 .jse-value {

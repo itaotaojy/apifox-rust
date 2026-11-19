@@ -2854,6 +2854,7 @@ fn response_example_docs(
                 miyo_core::model::FieldDoc {
                     description: (*desc).to_string(),
                     required: true,
+                    mock_count: None,
                 },
             )
         })

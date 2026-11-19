@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use miyo_core::model::MockMatchItem;
+use miyo_core::model::{FieldDoc, MockMatchItem, ResponseExample};
 use miyo_mock::server::{self, MockDefinition, MockStore};
 
 fn users_def() -> MockDefinition {
-    let mut d = MockDefinition::from_endpoint("GET", "/users/{id}", None);
+    let mut d = MockDefinition::from_endpoint("GET", "/users/{id}", None).unwrap();
     d.body_template = "{\"id\":\"{{params.id}}\",\"email\":\"{{mock.email}}\"}".into();
     d
 }
@@ -49,6 +49,68 @@ async fn mock_serves_templated_path_response() {
     let body = res.text().await.unwrap();
     assert!(body.contains("\"id\":\"42\""), "body: {body}");
     assert!(body.contains("example.com"), "email template: {body}");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mock_array_count_renders_independent_uuids_after_expansion() {
+    let example = ResponseExample {
+        id: uuid::Uuid::new_v4(),
+        endpoint_id: uuid::Uuid::new_v4(),
+        name: "200".into(),
+        status: 200,
+        headers: HashMap::new(),
+        body: r#"{
+            "data": {
+                "list": [
+                    {"id":"{{mock.uuid}}","name":"stable","enabled":true},
+                    {"id":"discard","name":"second"}
+                ],
+                "total":42,
+                "other":[1,2]
+            },
+            "message":"unchanged"
+        }"#
+        .into(),
+        content_type: "application/json".into(),
+        docs: HashMap::from([(
+            "/data/list".into(),
+            FieldDoc {
+                mock_count: Some(3),
+                ..FieldDoc::default()
+            },
+        )]),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let original = example.clone();
+    let def = MockDefinition::from_endpoint("GET", "/array", Some(&example)).unwrap();
+    assert_eq!(example, original);
+    let store = MockStore::new();
+    store.set_definitions(vec![def]);
+    let server = server::start(store).await.expect("start mock server");
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..2 {
+        let res = reqwest::get(format!("{}/array", server.address()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let body: serde_json::Value = serde_json::from_str(&res.text().await.unwrap()).unwrap();
+        let list = body["data"]["list"].as_array().unwrap();
+        assert_eq!(list.len(), 3);
+        for item in list {
+            let id = item["id"].as_str().unwrap();
+            assert!(uuid::Uuid::parse_str(id).is_ok());
+            assert!(ids.insert(id.to_string()), "duplicate UUID: {id}");
+            assert_eq!(item["name"], "stable");
+            assert_eq!(item["enabled"], true);
+        }
+        assert_eq!(body["data"]["total"], 42);
+        assert_eq!(body["data"]["other"], serde_json::json!([1, 2]));
+        assert_eq!(body["message"], "unchanged");
+    }
+    assert_eq!(ids.len(), 6);
+    assert_eq!(example, original);
     server.stop().await;
 }
 

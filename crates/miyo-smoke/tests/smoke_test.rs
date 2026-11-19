@@ -59,7 +59,7 @@ async fn full_user_flow() {
     let ep = repo::update_endpoint(&db, &ep).await.unwrap();
 
     // ---- 启动 Mock（链路 3 第一段）----
-    let mut def = MockDefinition::from_endpoint(ep.method.as_str(), &ep.path, None);
+    let mut def = MockDefinition::from_endpoint(ep.method.as_str(), &ep.path, None).unwrap();
     def.body_template = "{\"message\":\"hello from mock\",\"code\":0}".into();
     let store = MockStore::new();
     store.set_definitions(vec![def]);

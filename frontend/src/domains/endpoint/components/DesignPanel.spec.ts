@@ -304,6 +304,53 @@ describe('DesignPanel：返回响应 (Responses)', () => {
     expect(wrapper.find('.preview-code').text()).toContain('42')
   })
 
+  it('响应数组数量影响 Mock 预览并保存 docs，不修改原始响应', async () => {
+    const body = '{"data":{"list":[{"id":"{{mock.uuid}}"},{"id":"second"}],"other":[1,2]}}'
+    storeMock.setExamples([['ep-1', [example({ body })]]])
+    const wrapper = mountPanel()
+    await wrapper.find('.resp-editor .jse-mock-count input').setValue('3')
+    await wrapper.findAll('.preview-pills button').find((b) => b.text() === 'Mock 示例')!.trigger('click')
+    const preview = JSON.parse(wrapper.find('.preview-code').text())
+    expect(preview.responses['200'].data.list).toHaveLength(3)
+    expect(preview.responses['200'].data.other).toEqual([1, 2])
+    await wrapper.find('.resp-actions .miyo-btn').trigger('click')
+    await flushPromises()
+    expect(apiMock.saveExample.mock.calls[0][0]).toMatchObject({
+      body, docs: { '/data/list': { description: '', required: true, mock_count: 3 } },
+    })
+    expect(storeMock.examples.get('ep-1')![0].body).toBe(body)
+  })
+
+  it('清空数量恢复原数组，配置可从已保存响应回填', async () => {
+    const body = '{"list":[{"id":1},{"id":2}]}'
+    storeMock.setExamples([['ep-1', [example({ body, docs: {
+      '/list': { description: '', required: true, mock_count: 3 },
+    } })]]])
+    const wrapper = mountPanel()
+    const input = wrapper.find('.resp-editor .jse-mock-count input')
+    expect((input.element as HTMLInputElement).value).toBe('3')
+    await input.setValue('')
+    await wrapper.findAll('.preview-pills button').find((b) => b.text() === 'Mock 示例')!.trigger('click')
+    const preview = JSON.parse(wrapper.find('.preview-code').text())
+    expect(preview.responses['200'].list).toEqual([{ id: 1 }, { id: 2 }])
+    await wrapper.find('.resp-actions .miyo-btn').trigger('click')
+    await flushPromises()
+    expect(apiMock.saveExample.mock.calls[0][0]).toMatchObject({ body, docs: {} })
+  })
+
+  it('嵌套数量过大显示错误，拒绝保存', async () => {
+    storeMock.setExamples([['ep-1', [example({ body: '{"list":[{"rows":[{"id":1}]}]}' })]]])
+    const wrapper = mountPanel()
+    const inputs = wrapper.findAll('.resp-editor .jse-mock-count input')
+    await inputs[0].setValue('1000')
+    await inputs[1].setValue('1000')
+    await wrapper.findAll('.preview-pills button').find((b) => b.text() === 'Mock 示例')!.trigger('click')
+    expect(wrapper.find('.preview-code').text()).toContain('Mock 生成内容过大')
+    await wrapper.find('.resp-actions .miyo-btn').trigger('click')
+    await flushPromises()
+    expect(apiMock.saveExample).not.toHaveBeenCalled()
+  })
+
   it('快速添加：标题行预设按键创建对应响应示例并自动展开', async () => {
     const wrapper = mountPanel()
     await wrapper.findAll('.resp-preset').find((b) => b.text().includes('400'))!.trigger('click')

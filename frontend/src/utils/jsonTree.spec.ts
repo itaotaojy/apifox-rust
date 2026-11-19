@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   docsFromTree,
+  expandMockArrays,
   emptyJsonObjectNode,
   parseJsonTree,
   parseJsonTreeWithDocs,
@@ -73,6 +74,63 @@ describe('docs sidecar', () => {
 
   it('pointerEscape：~ 与 /', () => {
     expect(pointerEscape('a~b/c')).toBe('a~0b~1c')
+  })
+})
+
+describe('Mock 数组数量', () => {
+  const doc = (count: number) => ({ description: '', required: true, mock_count: count })
+
+  it('数量随 docs 保存，改名重绑路径，不改原样本', () => {
+    const raw = '{"data":{"list":[{"id":1}]}}'
+    const root = parseJsonTreeWithDocs(raw, { '/data/list': doc(3) })!
+    expect(treeToJsonString(root)).toBe(raw)
+    root.children[0].children[0].key = 'rows'
+    expect(docsFromTree(rebindPointers(root, ''))).toEqual({ '/data/rows': doc(3) })
+  })
+
+  it('嵌套配置逐层展开，保留其他数组，不修改输入', () => {
+    const sample = { groups: [{ list: [{ id: '{{mock.uuid}}' }], other: [1, 2] }], stable: [3, 4] }
+    const result = expandMockArrays(sample, { '/groups': doc(2), '/groups/0/list': doc(3) }) as typeof sample
+    expect(result.groups).toHaveLength(2)
+    expect(result.groups[0].list).toHaveLength(3)
+    expect(result.groups[1].list).toHaveLength(3)
+    expect(result.groups[0].list[0]).not.toBe(result.groups[0].list[1])
+    expect(result.groups[0].other).toEqual([1, 2])
+    expect(result.stable).toEqual([3, 4])
+    expect(sample.groups).toHaveLength(1)
+    expect(sample.groups[0].list).toHaveLength(1)
+  })
+
+  it('未配置保持原样；零数量与空数组；转义字段路径', () => {
+    const sample = { 'a/b': { '~list': [1, 2] }, empty: [] }
+    expect(expandMockArrays(sample)).toBe(sample)
+    expect(expandMockArrays(sample, { '/a~1b/~0list': doc(3), '/empty': doc(3) })).toEqual({
+      'a/b': { '~list': [1, 1, 1] }, empty: [],
+    })
+    expect(expandMockArrays(sample, { '/a~1b/~0list': doc(0) })).toEqual({
+      'a/b': { '~list': [] }, empty: [],
+    })
+  })
+
+  it('未配置的父数组保留各元素，子数组数量按样本路径应用', () => {
+    expect(expandMockArrays({ list: [{ rows: [1, 2] }, { rows: [3, 4] }] }, {
+      '/list/0/rows': doc(2),
+    })).toEqual({ list: [{ rows: [1, 1] }, { rows: [3, 3] }] })
+  })
+
+  it('忽略不存在的路径与非数组字段', () => {
+    const sample = { value: 1, list: [2, 3] }
+    expect(expandMockArrays(sample, { '/missing': doc(3), '/value': doc(3) })).toEqual(sample)
+  })
+
+  it('数量范围及总生成量受限', () => {
+    for (const count of [-1, 1.5, 1001, NaN]) {
+      expect(() => expandMockArrays({ list: [1] }, { '/list': doc(count) })).toThrow()
+    }
+    expect(() => expandMockArrays({ list: [{ rows: [1] }] }, {
+      '/list': doc(1000), '/list/0/rows': doc(1000),
+    })).toThrow()
+    expect(expandMockArrays([1], { '': doc(1000) })).toHaveLength(1000)
   })
 })
 

@@ -13,7 +13,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, Response as AxumResponse, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
-use miyo_core::model::{MockMatchItem, MockRequestLog, MockRule, ResponseExample};
+use miyo_core::model::{FieldDoc, MockMatchItem, MockRequestLog, MockRule, ResponseExample};
 use miyo_core::AppError;
 use uuid::Uuid;
 
@@ -73,8 +73,12 @@ impl MockDefinition {
     }
 
     /// 基于接口的响应示例自动 Mock；无示例时返回默认 200 JSON。
-    pub fn from_endpoint(method: &str, path: &str, example: Option<&ResponseExample>) -> Self {
-        if let Some(ex) = example {
+    pub fn from_endpoint(
+        method: &str,
+        path: &str,
+        example: Option<&ResponseExample>,
+    ) -> miyo_core::Result<Self> {
+        Ok(if let Some(ex) = example {
             MockDefinition {
                 method: method.to_string(),
                 path: path.to_string(),
@@ -87,7 +91,7 @@ impl MockDefinition {
                         .or_insert_with(|| ex.content_type.clone());
                     h
                 },
-                body_template: ex.body.clone(),
+                body_template: expand_mock_arrays(&ex.body, &ex.docs)?,
                 delay_ms: 0,
                 fault_rate_pct: 0,
                 fault_status: 500,
@@ -113,7 +117,77 @@ impl MockDefinition {
                 rule_id: None,
                 source_name: format!("{method} {path}"),
             }
+        })
+    }
+}
+
+const MAX_MOCK_ARRAY_COUNT: u32 = 1000;
+const MAX_MOCK_OUTPUT_NODES: usize = 10_000;
+
+pub fn expand_mock_arrays(
+    body: &str,
+    docs: &HashMap<String, FieldDoc>,
+) -> miyo_core::Result<String> {
+    if !docs.values().any(|doc| doc.mock_count.is_some()) {
+        return Ok(body.to_string());
+    }
+    for (path, doc) in docs {
+        if let Some(count) = doc.mock_count {
+            if count > MAX_MOCK_ARRAY_COUNT {
+                return Err(AppError::Validation(format!(
+                    "Mock count（{path}）必须为 0..={MAX_MOCK_ARRAY_COUNT} 的整数，当前为 {count}"
+                )));
+            }
         }
+    }
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| {
+        AppError::Validation(format!("配置 Mock count 的响应示例必须是有效 JSON：{err}"))
+    })?;
+    let mut visited = 0;
+    let expanded = expand_mock_value(&value, "", docs, &mut visited)?;
+    Ok(serde_json::to_string(&expanded)?)
+}
+
+fn expand_mock_value(
+    value: &serde_json::Value,
+    path: &str,
+    docs: &HashMap<String, FieldDoc>,
+    visited: &mut usize,
+) -> miyo_core::Result<serde_json::Value> {
+    if *visited >= MAX_MOCK_OUTPUT_NODES {
+        return Err(AppError::Validation(format!(
+            "Mock count 展开后的 JSON 节点数不能超过 {MAX_MOCK_OUTPUT_NODES}"
+        )));
+    }
+    *visited += 1;
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut output = serde_json::Map::new();
+            for (key, child) in fields {
+                let escaped = key.replace('~', "~0").replace('/', "~1");
+                let child_path = format!("{path}/{escaped}");
+                let expanded = expand_mock_value(child, &child_path, docs, visited)?;
+                output.insert(key.clone(), expanded);
+            }
+            Ok(serde_json::Value::Object(output))
+        }
+        serde_json::Value::Array(items) => {
+            let mut output = Vec::new();
+            let sample_path = format!("{path}/0");
+            if let Some(count) = docs.get(path).and_then(|doc| doc.mock_count) {
+                if let Some(sample) = items.first() {
+                    for _ in 0..count {
+                        output.push(expand_mock_value(sample, &sample_path, docs, visited)?);
+                    }
+                }
+            } else {
+                for item in items {
+                    output.push(expand_mock_value(item, &sample_path, docs, visited)?);
+                }
+            }
+            Ok(serde_json::Value::Array(output))
+        }
+        _ => Ok(value.clone()),
     }
 }
 
@@ -618,7 +692,7 @@ impl MockServer {
 /// 启动 Mock 服务。端口从 4010 起依次尝试（最多 `MAX_PORT_TRIES` 次）。
 pub async fn start(store: MockStore) -> Result<MockServer, AppError> {
     for port in DEFAULT_MOCK_PORT..DEFAULT_MOCK_PORT + MAX_PORT_TRIES {
-        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+        let addr: SocketAddr = ([0, 0, 0, 0], port).into();
         let router = Router::new()
             .fallback(mock_handler)
             .with_state(store.clone());
@@ -634,7 +708,7 @@ pub async fn start(store: MockStore) -> Result<MockServer, AppError> {
                 })
                 .await;
         });
-        tracing::info!("[mock] Mock 服务已启动：http://127.0.0.1:{port}");
+        tracing::info!("[mock] Mock 服务已启动：监听 0.0.0.0:{port}（本机访问 http://127.0.0.1:{port}，局域网内用本机 IP 访问）");
         return Ok(MockServer {
             port,
             store,
@@ -756,9 +830,191 @@ mod tests {
         assert_eq!(out, "a  b");
     }
 
+    fn count_docs(counts: &[(&str, u32)]) -> HashMap<String, FieldDoc> {
+        counts
+            .iter()
+            .map(|(path, count)| {
+                (
+                    (*path).to_string(),
+                    FieldDoc {
+                        mock_count: Some(*count),
+                        ..FieldDoc::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn expanded(body: &str, counts: &[(&str, u32)]) -> serde_json::Value {
+        serde_json::from_str(&expand_mock_arrays(body, &count_docs(counts)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn no_mock_counts_preserve_body_exactly_without_parsing() {
+        let docs = HashMap::from([("/list".into(), FieldDoc::default())]);
+        for body in ["", "not JSON {{mock.uuid}}", " {\n  \"list\": [1, 2]\n} "] {
+            assert_eq!(expand_mock_arrays(body, &HashMap::new()).unwrap(), body);
+            assert_eq!(expand_mock_arrays(body, &docs).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn mock_arrays_duplicate_first_sample_only_and_leave_other_fields_stable() {
+        let body = r#"{"data":{"list":[{"id":"{{mock.uuid}}","name":"sample"},{"name":"discard"}],"other":[1,2]},"ok":true}"#;
+        let actual = expanded(body, &[("/data/list", 3)]);
+        let sample = serde_json::json!({"id": "{{mock.uuid}}", "name": "sample"});
+        assert_eq!(
+            actual["data"]["list"],
+            serde_json::json!([sample, sample, sample])
+        );
+        assert_eq!(actual["data"]["other"], serde_json::json!([1, 2]));
+        assert_eq!(actual["ok"], true);
+        assert_eq!(expanded("[1,2]", &[("", 3)]), serde_json::json!([1, 1, 1]));
+    }
+
+    #[test]
+    fn nested_mock_arrays_use_sample_paths_for_every_repeated_parent() {
+        let body = r#"{"groups":[{"name":"first","rows":[{"tags":["a","b"]},{"tags":["discard"]}]},{"name":"discard","rows":[] }]}"#;
+        let actual = expanded(
+            body,
+            &[
+                ("/groups", 2),
+                ("/groups/0/rows", 3),
+                ("/groups/0/rows/0/tags", 2),
+            ],
+        );
+        let row = serde_json::json!({"tags": ["a", "a"]});
+        let group = serde_json::json!({"name": "first", "rows": [row, row, row]});
+        assert_eq!(actual, serde_json::json!({"groups": [group, group]}));
+    }
+
+    #[test]
+    fn unconfigured_arrays_keep_all_items_with_nested_sample_metadata() {
+        let body = r#"{"groups":[{"name":"first","rows":[{"tags":[1,9]},{"tags":[2]}]},{"name":"second","rows":[{"tags":[3,8]}]}]}"#;
+        let actual = expanded(body, &[("/groups/0/rows/0/tags", 2)]);
+        assert_eq!(
+            actual,
+            serde_json::json!({"groups": [
+                {"name": "first", "rows": [{"tags": [1,1]}, {"tags": [2,2]}]},
+                {"name": "second", "rows": [{"tags": [3,3]}]}
+            ]})
+        );
+    }
+
+    #[test]
+    fn mock_array_paths_escape_slashes_tildes_and_empty_keys() {
+        let body = r#"{"a/b":{"~list":[{"~1":[5,9],"":[true]}]}}"#;
+        let actual = expanded(
+            body,
+            &[
+                ("/a~1b/~0list", 2),
+                ("/a~1b/~0list/0/~01", 3),
+                ("/a~1b/~0list/0/", 0),
+            ],
+        );
+        let item = serde_json::json!({"~1": [5,5,5], "": []});
+        assert_eq!(actual, serde_json::json!({"a/b": {"~list": [item, item]}}));
+    }
+
+    #[test]
+    fn zero_counts_clear_arrays_and_empty_arrays_have_no_sample() {
+        let body = r#"{"list":[1,2],"empty":[],"stable":[3,4]}"#;
+        let actual = expanded(body, &[("/list", 0), ("/empty", 1000)]);
+        assert_eq!(
+            actual,
+            serde_json::json!({"list": [], "empty": [], "stable": [3,4]})
+        );
+    }
+
+    #[test]
+    fn stale_and_nonarray_mock_paths_are_ignored() {
+        let body = r#"{"count":42,"list":[{"nested":[1,2]}, {"nested":[3]}]}"#;
+        let actual = expanded(
+            body,
+            &[("/missing", 3), ("/count", 2), ("/list/1/nested", 4)],
+        );
+        assert_eq!(
+            actual,
+            serde_json::from_str::<serde_json::Value>(body).unwrap()
+        );
+    }
+
+    #[test]
+    fn mock_counts_reject_invalid_json_and_counts_over_limit() {
+        for count in [1001, u32::MAX] {
+            let err = expand_mock_arrays("[1]", &count_docs(&[("", count)])).unwrap_err();
+            assert!(matches!(err, AppError::Validation(ref message) if message.contains("1000")));
+        }
+        for body in ["", "text", "{", r#"{"list":[{{mock.int}}]}"#] {
+            let err = expand_mock_arrays(body, &count_docs(&[("/list", 0)])).unwrap_err();
+            assert!(matches!(err, AppError::Validation(ref message) if message.contains("JSON")));
+        }
+        assert_eq!(
+            expanded("[7]", &[("", 1000)]).as_array().unwrap().len(),
+            1000
+        );
+    }
+
+    #[test]
+    fn mock_output_node_limit_counts_containers_and_unchanged_items() {
+        let docs = count_docs(&[("/stale", 1)]);
+        let at_limit = serde_json::to_string(&vec![serde_json::Value::Null; 9999]).unwrap();
+        assert!(expand_mock_arrays(&at_limit, &docs).is_ok());
+        let over_limit = serde_json::to_string(&vec![serde_json::Value::Null; 10_000]).unwrap();
+        let err = expand_mock_arrays(&over_limit, &docs).unwrap_err();
+        assert!(matches!(err, AppError::Validation(ref message) if message.contains("10000")));
+        assert_eq!(
+            expand_mock_arrays(&over_limit, &HashMap::new()).unwrap(),
+            over_limit
+        );
+        assert_eq!(expanded(&over_limit, &[("", 0)]), serde_json::json!([]));
+    }
+
+    #[test]
+    fn nested_amplification_stops_at_output_node_limit() {
+        let docs = count_docs(&[("", 1000), ("/0", 1000)]);
+        let value = serde_json::json!([[null]]);
+        let mut visited = 0;
+        let err = expand_mock_value(&value, "", &docs, &mut visited).unwrap_err();
+        assert_eq!(visited, MAX_MOCK_OUTPUT_NODES);
+        assert!(matches!(err, AppError::Validation(ref message) if message.contains("10000")));
+        assert!(expand_mock_arrays("[[null]]", &docs).is_err());
+    }
+
+    #[test]
+    fn from_endpoint_expands_without_mutating_example_and_propagates_errors() {
+        let mut ex = ResponseExample {
+            id: Uuid::new_v4(),
+            endpoint_id: Uuid::new_v4(),
+            name: "200".into(),
+            status: 200,
+            headers: HashMap::new(),
+            body: " { \"list\": [1, 2] } ".into(),
+            content_type: "application/json".into(),
+            docs: count_docs(&[("/list", 3)]),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let original = ex.clone();
+        let def = MockDefinition::from_endpoint("GET", "/list", Some(&ex)).unwrap();
+        assert_eq!(ex, original);
+        assert_eq!(def.body_template, r#"{"list":[1,1,1]}"#);
+        ex.docs = count_docs(&[("/list", 1001)]);
+        assert!(matches!(
+            MockDefinition::from_endpoint("GET", "/list", Some(&ex)),
+            Err(AppError::Validation(_))
+        ));
+        ex.body = "[[null]]".into();
+        ex.docs = count_docs(&[("", 1000), ("/0", 1000)]);
+        assert!(matches!(
+            MockDefinition::from_endpoint("GET", "/list", Some(&ex)),
+            Err(AppError::Validation(_))
+        ));
+    }
+
     #[test]
     fn from_endpoint_default_and_example() {
-        let def = MockDefinition::from_endpoint("GET", "/ping", None);
+        let def = MockDefinition::from_endpoint("GET", "/ping", None).unwrap();
         assert_eq!(def.source, MockSource::Default);
         assert_eq!(def.status, 200);
         assert!(def.body_template.contains("Mock 默认响应"));
@@ -774,7 +1030,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        let d = MockDefinition::from_endpoint("POST", "/echo", Some(&ex));
+        let d = MockDefinition::from_endpoint("POST", "/echo", Some(&ex)).unwrap();
         assert_eq!(d.status, 201);
         assert_eq!(d.source, MockSource::Example);
         assert!(d.headers.contains_key("content-type") || d.headers.contains_key("Content-Type"));

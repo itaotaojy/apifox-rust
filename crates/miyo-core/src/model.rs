@@ -643,7 +643,7 @@ impl BodySpec {
 /// JSON Body / 响应示例的字段文档（设计页结构化编辑器的注释 sidecar）。
 ///
 /// key 为 RFC6901 JSON Pointer 路径（如 `/user/name`、数组样本元素用 `/0`），
-/// 与前端 `jsonTree` 编辑器生成的 path 一一对应；发送 / Mock 均忽略此数据。
+/// 与前端 `jsonTree` 编辑器生成的 path 一一对应。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FieldDoc {
@@ -653,6 +653,9 @@ pub struct FieldDoc {
     /// 是否必填（结构化编辑器勾选；样本推断默认为 true）。
     #[serde(default = "default_true")]
     pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub mock_count: Option<u32>,
 }
 
 /// 测试配置（pre_request / extract / assertions），存储为 JSON。
@@ -1779,6 +1782,27 @@ mod tests {
         assert_eq!(json["body"]["mode"], "none");
         assert_eq!(json["timeout_ms"], serde_json::Value::Null);
         assert_eq!(json["follow_redirects"], true);
+    }
+
+    #[test]
+    fn field_doc_mock_count_serde_compatibility() {
+        let legacy = serde_json::json!({"description": "items", "required": true});
+        let mut doc: FieldDoc = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(doc.mock_count, None);
+        assert_eq!(serde_json::to_value(&doc).unwrap(), legacy);
+        let defaults: FieldDoc = serde_json::from_str("{}").unwrap();
+        assert!(defaults.required);
+        assert_eq!(defaults.mock_count, None);
+        for count in [0, 3, 1000] {
+            doc.mock_count = Some(count);
+            let json = serde_json::to_value(&doc).unwrap();
+            assert_eq!(json["mock_count"], count);
+            assert_eq!(serde_json::from_value::<FieldDoc>(json).unwrap(), doc);
+        }
+        for invalid in ["-1", "1.5", "\"3\"", "4294967296"] {
+            let json = format!("{{\"mock_count\":{invalid}}}");
+            assert!(serde_json::from_str::<FieldDoc>(&json).is_err());
+        }
     }
 
     #[test]

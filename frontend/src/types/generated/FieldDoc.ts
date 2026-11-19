@@ -4,7 +4,7 @@
  * JSON Body / 响应示例的字段文档（设计页结构化编辑器的注释 sidecar）。
  *
  * key 为 RFC6901 JSON Pointer 路径（如 `/user/name`、数组样本元素用 `/0`），
- * 与前端 `jsonTree` 编辑器生成的 path 一一对应；发送 / Mock 均忽略此数据。
+ * 与前端 `jsonTree` 编辑器生成的 path 一一对应。
  */
 export type FieldDoc = { 
 /**
@@ -14,4 +14,4 @@ description: string,
 /**
  * 是否必填（结构化编辑器勾选；样本推断默认为 true）。
  */
-required: boolean, };
+required: boolean, mock_count?: number, };

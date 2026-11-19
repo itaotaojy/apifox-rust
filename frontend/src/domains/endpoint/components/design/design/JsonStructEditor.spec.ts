@@ -10,7 +10,7 @@ import JsonStructEditor from '@/domains/endpoint/components/design/design/JsonSt
 import { useLocaleStore } from '@/stores/locale'
 import type { FieldDoc } from '@/types/miyoApi.d'
 
-function mountEditor(props: { raw: string; docs?: Record<string, FieldDoc> }) {
+function mountEditor(props: { raw: string; docs?: Record<string, FieldDoc>; mockCounts?: boolean }) {
   return mount(JsonStructEditor, { props })
 }
 
@@ -72,6 +72,50 @@ describe('JsonStructEditor', () => {
     await w.findAll('.jse-row, .jse-line').at(-1)!.find('.ib.tone-danger').trigger('click')
     raw = w.emitted('update:raw')!.at(-1)![0] as string
     expect(JSON.parse(raw)).toEqual({ a: 1 })
+  })
+
+  it('仅响应编辑器的数组行展示 Mock 数量', () => {
+    const raw = '{"data":{"list":[{"id":1}]},"empty":[]}'
+    expect(mountEditor({ raw }).find('.jse-mock-count').exists()).toBe(false)
+    const w = mountEditor({ raw, mockCounts: true })
+    expect(w.findAll('.jse-mock-count input')).toHaveLength(2)
+    expect(w.findAll('.jse-mock-count input')[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('数量仅回传 docs，不改变多元素原始样本；清空恢复未配置', async () => {
+    const raw = '{"list":[{"id":1},{"id":2}]}'
+    const w = mountEditor({ raw, mockCounts: true })
+    await w.find('.jse-mock-count input').setValue('3')
+    expect(w.emitted('update:raw')).toBeUndefined()
+    const docs = w.emitted('update:docs')!.at(-1)![0] as Record<string, FieldDoc>
+    expect(docs).toEqual({ '/list': { description: '', required: true, mock_count: 3 } })
+    await w.setProps({ docs })
+    expect((w.find('.jse-mock-count input').element as HTMLInputElement).value).toBe('3')
+    await w.find('.jse-mock-count input').setValue('0')
+    expect(w.emitted('update:docs')!.at(-1)![0]).toMatchObject({ '/list': { mock_count: 0 } })
+    await w.find('.jse-mock-count input').setValue('')
+    expect(w.emitted('update:docs')!.at(-1)![0]).toEqual({})
+  })
+
+  it('非法数量不写入；数组转为标量删除数量配置', async () => {
+    const w = mountEditor({
+      raw: '{"list":[{"id":1}]}', mockCounts: true,
+      docs: { '/list': { description: '', required: true, mock_count: 2 } },
+    })
+    for (const value of ['-1', '1.5', '1001']) await w.find('.jse-mock-count input').setValue(value)
+    expect(w.emitted('update:docs')).toBeUndefined()
+    expect((w.find('.jse-mock-count input').element as HTMLInputElement).value).toBe('2')
+    await w.find('.jse-type').setValue('string')
+    expect(w.emitted('update:docs')!.at(-1)![0]).toEqual({})
+    expect(w.find('.jse-mock-count').exists()).toBe(false)
+  })
+
+  it('外部只更新 docs 时重新回填数量', async () => {
+    const w = mountEditor({ raw: '{"list":[1]}', mockCounts: true })
+    await w.setProps({ docs: { '/list': { description: '', required: true, mock_count: 5 } } })
+    expect((w.find('.jse-mock-count input').element as HTMLInputElement).value).toBe('5')
+    await w.setProps({ docs: {} })
+    expect((w.find('.jse-mock-count input').element as HTMLInputElement).value).toBe('')
   })
 
   it('空对象根显示空态 + 添加按钮', () => {

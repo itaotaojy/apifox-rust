@@ -4,9 +4,41 @@
  * - JSON 文本 ↔ 节点树互转（对象 / 数组 / 标量）；
  * - 文档 sidecar 键为 RFC6901 JSON Pointer（数组元素固定 `/0` 样本路径）；
  * - 树节点自带 description / required，序列化时 flatten 成 `Record<pointer, FieldDoc>`；
- * - 发送 / Mock 忽略 docs，仅设计页消费。
+ * - Mock 数组数量随字段 sidecar 保存，不改变样本正文。
  */
 import type { FieldDoc } from '@/types/miyoApi'
+import { tFallback } from '@/stores/locale'
+
+export const MOCK_ARRAY_MAX_COUNT = 1000
+const MOCK_MAX_NODES = 10000
+
+export function expandMockArrays(value: unknown, docs: Record<string, FieldDoc> = {}): unknown {
+  if (!Object.values(docs).some((doc) => doc.mock_count !== undefined)) return value
+  for (const doc of Object.values(docs)) {
+    const count = doc.mock_count
+    if (count !== undefined && (!Number.isInteger(count) || count < 0 || count > MOCK_ARRAY_MAX_COUNT)) {
+      throw new Error(tFallback('design.mockCountRange'))
+    }
+  }
+  let remaining = MOCK_MAX_NODES
+  function expand(current: unknown, pointer: string): unknown {
+    if (--remaining < 0) throw new Error(tFallback('design.mockSizeLimit'))
+    if (Array.isArray(current)) {
+      const count = docs[pointer]?.mock_count
+      if (count !== undefined) {
+        return current.length ? Array.from({ length: count }, () => expand(current[0], `${pointer}/0`)) : []
+      }
+      return current.map((item) => expand(item, `${pointer}/0`))
+    }
+    if (current !== null && typeof current === 'object') {
+      return Object.fromEntries(Object.entries(current).map(([key, item]) => [
+        key, expand(item, `${pointer}/${pointerEscape(key)}`),
+      ]))
+    }
+    return current
+  }
+  return expand(value, '')
+}
 
 export type JsonTreeType = 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null'
 
@@ -24,6 +56,7 @@ export interface JsonTreeNode {
   pointer: string
   description: string
   required: boolean
+  mockCount?: number
 }
 
 /** RFC6901：`~` → `~0`，`/` → `~1`。 */
@@ -196,8 +229,13 @@ function flattenDocs(node: JsonTreeNode, out: Record<string, FieldDoc>): void {
   // 根节点（pointer === ''）不产生文档键
   if (node.pointer) {
     const desc = node.description.trim()
-    if (desc || !node.required) {
-      out[node.pointer] = { description: desc, required: node.required }
+    const count = node.type === 'array' ? node.mockCount : undefined
+    if (desc || !node.required || count !== undefined) {
+      out[node.pointer] = {
+        description: desc,
+        required: node.required,
+        ...(count !== undefined ? { mock_count: count } : {}),
+      }
     }
   }
   for (const child of node.children) flattenDocs(child, out)
@@ -215,6 +253,7 @@ function applyDocs(node: JsonTreeNode, docs: Record<string, FieldDoc>): void {
   if (doc) {
     node.description = doc.description ?? ''
     node.required = doc.required ?? true
+    if (node.type === 'array') node.mockCount = doc.mock_count
   }
   for (const child of node.children) applyDocs(child, docs)
 }

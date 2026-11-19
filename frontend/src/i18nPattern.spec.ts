@@ -117,7 +117,7 @@ function templateBlock(text: string): string | null {
 
 /** 去注释后按行检查残留 CJK（注释里的中文是给开发者看的，不在约束范围）。 */
 function visibleCjkLines(text: string): string[] {
-  let stripped = text.replace(/\/\*[\s\S]*?\*\//g, '') // 块注释（含 CSS）
+  let stripped = text.replace(/\r\n/g, '\n').replace(/\/\*[\s\S]*?\*\//g, '') // 块注释（含 CSS）
   stripped = stripped.replace(/<!--[\s\S]*?-->/g, '') // HTML 注释
   const offenders: string[] = []
   for (const raw of stripped.split('\n')) {
@@ -162,7 +162,7 @@ describe('i18n 写法', () => {
   it('用户可见文案不硬编码中文（一律走 t()/tFallback()）', () => {
     const offenders: string[] = []
     for (const file of sourceFiles(SRC)) {
-      const rel = file.slice(SRC.length + 1)
+      const rel = file.slice(SRC.length + 1).replace(/\\/g, '/')
       const allow = FILE_ALLOWLIST[`src/${rel}`] ?? []
       const lines = visibleCjkLines(readFileSync(file, 'utf8')).filter(
         (line) => !allow.some((re) => re.test(line)),
@@ -176,7 +176,7 @@ describe('i18n 写法', () => {
     const offenders: string[] = []
     for (const file of sourceFiles(SRC)) {
       if (!file.endsWith('.vue')) continue
-      const rel = file.slice(SRC.length + 1)
+      const rel = file.slice(SRC.length + 1).replace(/\\/g, '/')
       const allow = TEMPLATE_ALLOWLIST[`src/${rel}`] ?? []
       const lines = visibleEnLines(readFileSync(file, 'utf8'), allow)
       for (const line of lines) offenders.push(`${rel}: ${line}`)

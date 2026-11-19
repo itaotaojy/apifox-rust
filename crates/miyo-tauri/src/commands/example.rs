@@ -30,6 +30,7 @@ pub async fn save_example(
     if example.name.trim().is_empty() {
         return Err(CommandError::validation("示例名称不能为空"));
     }
+    miyo_mock::server::expand_mock_arrays(&example.body, &example.docs)?;
     repo::save_response_example(&state.db, &example).await?;
     Ok(example)
 }

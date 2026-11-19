@@ -1,7 +1,7 @@
 {
   "name": "miyo",
   "private": true,
-  "version": "0.0.60",
+  "version": "0.0.63",
   "description": "Miyo — lightweight cross-platform API debugging client (Tauri 2 + Vue 3 frontend)",
   "license": "Apache-2.0",
   "repository": {
@@ -16,6 +16,7 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
     "tauri": "bash ../scripts/ensure-mcp-bin.sh && tauri",
+    "build:release": "node ../scripts/release.mjs build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ."

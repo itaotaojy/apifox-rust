@@ -527,6 +527,44 @@ async fn save_response_example_repeated_id_updates_not_conflicts() {
     assert_eq!(list[0].body, "{\"code\":0}");
 }
 
+#[tokio::test]
+async fn response_mock_counts_persist_without_changing_body() {
+    let db = pool().await;
+    let project = repo::create_project(&db, "P", "").await.unwrap();
+    let ep = repo::create_endpoint(&db, project.id, None, "E")
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let mut ex = ResponseExample {
+        id: Uuid::new_v4(),
+        endpoint_id: ep.id,
+        name: "200 OK".into(),
+        status: 200,
+        headers: Default::default(),
+        body: r#"{"data":{"list":[{"id":1},{"id":2}]}}"#.into(),
+        content_type: "application/json".into(),
+        docs: std::collections::HashMap::from([(
+            "/data/list".into(),
+            miyo_core::model::FieldDoc {
+                description: "items".into(),
+                required: true,
+                mock_count: Some(10),
+            },
+        )]),
+        created_at: now,
+        updated_at: now,
+    };
+    repo::save_response_example(&db, &ex).await.unwrap();
+    let saved = repo::list_response_examples(&db, ep.id).await.unwrap();
+    assert_eq!(saved[0], ex);
+    ex.docs.get_mut("/data/list").unwrap().mock_count = None;
+    repo::save_response_example(&db, &ex).await.unwrap();
+    let cleared = repo::list_response_examples_by_endpoints(&db, &[ep.id])
+        .await
+        .unwrap();
+    assert_eq!(cleared[&ep.id][0], ex);
+}
+
 /// 备份恢复的批量多值 INSERT：六张表的 SQL（含 ON CONFLICT upsert）在真库上
 /// 可执行，且与逐条 save_* 同语义——同 id 重复批量写入是覆盖更新而非冲突。
 #[tokio::test]

@@ -80,7 +80,7 @@ async fn build_definitions(
             ep.method.as_str(),
             &ep.path,
             example,
-        ));
+        )?);
     }
     Ok(defs)
 }

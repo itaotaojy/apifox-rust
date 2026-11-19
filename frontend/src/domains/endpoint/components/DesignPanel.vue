@@ -29,6 +29,7 @@ import { highlightJSON } from '@/utils/highlight'
 import { handleTextareaTab } from '@/utils/textareaIndent'
 import { statusTextOf } from '@/utils/testCases'
 import { inferSchema, mockJsonFromSchema } from '@/utils/schemaInfer'
+import { expandMockArrays } from '@/utils/jsonTree'
 import type { SchemaRow } from '@/utils/schemaInfer'
 import { errorText } from '@/utils/errorText'
 
@@ -450,6 +451,10 @@ async function saveRespBody(ex: ResponseExample): Promise<void> {
     toast.warning(t('design.invalidJsonHint'))
   }
   try {
+    const nextDocs = docs ?? ex.docs
+    if (Object.values(nextDocs ?? {}).some((doc) => doc.mock_count !== undefined)) {
+      expandMockArrays(JSON.parse(body), nextDocs)
+    }
     const saved = await api.saveExample({
       ...ex,
       body,
@@ -531,7 +536,8 @@ function sampleShape(
   text: string,
   mock: boolean,
   docs?: Record<string, FieldDoc>,
-): Record<string, unknown> | null {
+  response = false,
+): unknown | null {
   const trimmed = text.trim()
   if (!trimmed) return null
   let parsed: unknown
@@ -542,7 +548,12 @@ function sampleShape(
   }
   const rows = inferSchema(parsed)
   if (mock) {
-    return mockJsonFromSchema(rows)
+    if (!response) return mockJsonFromSchema(rows)
+    try {
+      return expandMockArrays(parsed, docs)
+    } catch (err) {
+      return { error: errorText(err) }
+    }
   }
   const shaped = shapeOf(rows, false)
   if (Object.keys(shaped).length && docs && Object.keys(docs).length) {
@@ -602,7 +613,7 @@ const preview = computed<Record<string, unknown> | null>(() => {
     const docs = respDocsEdits.value.get(ex.id) ?? ex.docs
     // 未保存缓冲优先（结构/文本编辑实时反映到预览）
     const text = respStructRawOf(ex)
-    responsesShape[String(ex.status)] = sampleShape(text, mock, docs) ?? { example: text || '<empty>' }
+    responsesShape[String(ex.status)] = sampleShape(text, mock, docs, true) ?? { example: text || '<empty>' }
   }
 
   const out: Record<string, unknown> = {
@@ -877,6 +888,7 @@ onBeforeUnmount(() => {
                 </div>
                 <JsonStructEditor
                   v-if="respJsonView === 'struct'"
+                  mock-counts
                   :raw="respStructRawOf(ex)"
                   :docs="respDocsEdits.get(ex.id) ?? ex.docs"
                   @update:raw="onRespStructRaw(ex, $event)"
