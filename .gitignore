@@ -33,4 +33,5 @@ java/dist/
 /frontend/src-tauri/resources/
 .openchamber/
 .zcode/
+.workbuddy/
 /dist/
