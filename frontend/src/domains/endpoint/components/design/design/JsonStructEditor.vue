@@ -51,7 +51,7 @@ let hydrated = false
  * 自己 emit 写回的回声（text === 当前树序列化）跳过，防换树丢焦点。
  */
 watch(
-  () => [props.raw, props.docs] as const,
+  [() => props.raw, () => props.docs],
   ([text, docs]) => {
     if (hydrated && text === treeToPrettyJson(root.value)
       && JSON.stringify(docs ?? {}) === JSON.stringify(docsFromTree(root.value))) return
