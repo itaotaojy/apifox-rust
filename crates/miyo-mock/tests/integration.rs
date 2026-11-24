@@ -178,6 +178,76 @@ async fn mock_fault_injection_returns_fault_status() {
 }
 
 #[tokio::test]
+async fn mock_returns_example_configured_headers() {
+    let example = ResponseExample {
+        id: uuid::Uuid::new_v4(),
+        endpoint_id: uuid::Uuid::new_v4(),
+        name: "200".into(),
+        status: 200,
+        headers: HashMap::from([
+            ("X-Request-Id".into(), "req-1".into()),
+            ("Content-Type".into(), "application/xml".into()),
+        ]),
+        body: "{\"ok\":true}".into(),
+        content_type: "application/json".into(),
+        docs: HashMap::new(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let def = MockDefinition::from_endpoint("GET", "/h", Some(&example)).unwrap();
+    let store = MockStore::new();
+    store.set_definitions(vec![def]);
+    let server = server::start(store).await.expect("start mock server");
+
+    let res = reqwest::get(format!("{}/h", server.address()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("req-1"),
+        "示例配置的响应头应原样返回"
+    );
+    // 显式配置的 Content-Type 生效，且不再追加默认 JSON 头（仅一条 content-type）
+    assert_eq!(res.headers().get_all("content-type").iter().count(), 1);
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/xml")
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mock_example_without_content_type_keeps_default_json_header() {
+    let example = ResponseExample {
+        id: uuid::Uuid::new_v4(),
+        endpoint_id: uuid::Uuid::new_v4(),
+        name: "200".into(),
+        status: 200,
+        headers: HashMap::new(),
+        body: "{\"ok\":true}".into(),
+        content_type: "application/json".into(),
+        docs: HashMap::new(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let def = MockDefinition::from_endpoint("GET", "/plain", Some(&example)).unwrap();
+    let store = MockStore::new();
+    store.set_definitions(vec![def]);
+    let server = server::start(store).await.expect("start mock server");
+
+    let res = reqwest::get(format!("{}/plain", server.address()))
+        .await
+        .unwrap();
+    assert_eq!(res.headers().get_all("content-type").iter().count(), 1);
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn default_json_for_endpoint_without_example() {
     let store = MockStore::new();
     store.set_definitions(vec![users_def()]);

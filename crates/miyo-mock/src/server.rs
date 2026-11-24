@@ -622,11 +622,17 @@ async fn mock_handler(
         };
         builder = builder.header(kn, vv);
     }
-    if !def
+    // 已显式配置 Content-Type（示例 content_type / 用户配置的响应头）或 HTML
+    // 响应时不追加默认 JSON 头，避免响应出现两条 Content-Type。
+    let has_content_type = def
         .headers
-        .values()
-        .any(|v| v.to_lowercase().contains("html"))
-    {
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"))
+        || def
+            .headers
+            .values()
+            .any(|v| v.to_lowercase().contains("html"));
+    if !has_content_type {
         builder = builder.header(header::CONTENT_TYPE, "application/json; charset=utf-8");
     }
 
