@@ -9,7 +9,8 @@
  *   规则见 utils/jsonPaste（只排版 JSON 值、已有内容不重排、已美化则放行原生粘贴）。
  * - 深色底色 #121318，聚焦时 1px 紫色光晕（原 3px 重描边移除）。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, onBeforeUnmount} from 'vue'
+import { pushEscHandler } from '@/utils/escStack'
 import { useToast } from '@/composables/useToast'
 import { useLocaleStore } from '@/stores/locale'
 import { copyText } from '@/utils/clipboard'
@@ -104,7 +105,6 @@ watch(
 )
 onUnmounted(() => {
   if (shownTimer) clearTimeout(shownTimer)
-  window.removeEventListener('keydown', onFsKeydown)
   wrapRef.value?.removeEventListener('scroll', clampWrapScroll)
   availObserver?.disconnect()
   availObserver = null
@@ -162,7 +162,7 @@ function getMatchOffsets(text: string, q: string, targetIdx: number): [number, n
 }
 
 watch(
-  () => [props.query, props.activeMatch],
+  [() => props.query, () => props.activeMatch],
   ([q, matchIdx]) => {
     if (!q || !taRef.value || matchIdx === undefined) return
     const offsets = getMatchOffsets(props.modelValue, String(q), Number(matchIdx))
@@ -218,17 +218,20 @@ function toggleFullscreen(): void {
   fullscreen.value = !fullscreen.value
 }
 
-function onFsKeydown(e: KeyboardEvent): void {
-  if (fullscreen.value && e.key === 'Escape') {
-    e.preventDefault()
-    fullscreen.value = false
-  }
-}
-
+/**
+ * 全屏 Esc 接 escStack：抽屉/弹层内开全屏时，Esc 先退全屏不关宿主弹层
+ * （原先 window 直听与 escStack 双轨并存，会穿透关掉抽屉——已统一）。
+ */
+let offFullscreenEsc: (() => void) | null = null
 watch(fullscreen, (on) => {
-  if (on) window.addEventListener('keydown', onFsKeydown)
-  else window.removeEventListener('keydown', onFsKeydown)
+  offFullscreenEsc?.()
+  offFullscreenEsc = on
+    ? pushEscHandler(() => {
+      fullscreen.value = false
+    })
+    : null
 })
+onBeforeUnmount(() => offFullscreenEsc?.())
 
 /* 行号槽宽度走全局 --code-gutter-w（固定 54px，与响应树/行视图共用，
  * 不随位数伸缩——保证与响应区代码左缘绝对对齐），见 style.css。 */
@@ -463,6 +466,9 @@ async function copyJson(): Promise<void> {
 </script>
 
 <template>
+  <!-- 全屏时 Teleport 到 body：脱离工作区布局的层叠压制（top-bar / 页签行 /
+       编辑器栏会盖住原位 fixed 面板，v0.0.61 用户实测）；非全屏原位渲染。 -->
+  <Teleport to="body" :disabled="!fullscreen">
   <div ref="editorRef" class="json-editor" :class="{ fullscreen }">
     <!-- 顶部工具栏：状态 Tag + 快捷操作（替代原悬浮层，不遮挡代码） -->
     <div class="je-toolbar">
@@ -558,6 +564,7 @@ async function copyJson(): Promise<void> {
       ></textarea>
     </div>
   </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -569,17 +576,20 @@ async function copyJson(): Promise<void> {
   min-height: 0;
 }
 
-/* 全屏：fixed 覆盖视口（祖先链无 transform），wrap 由 flex:1 拉伸 */
+/* 全屏：fixed 全出血覆盖视口（祖先链无 transform），wrap 由 flex:1 拉伸。
+ * inset 必须为 0：留缝会让底层 chrome 从缝里渗出（用户实测截图）；
+ * macOS 主窗交通灯左缘预留见 style.css 全局规则。 */
 .json-editor.fullscreen {
   position: fixed;
-  inset: 16px;
-  z-index: 80;
+  inset: 0;
+  /* 全屏层：覆盖工作区 chrome，低于 Toast（层级阶梯见 style.css） */
+  z-index: var(--z-overlay);
   gap: 6px;
   padding: 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
+  border: none;
+  border-radius: 0;
   background: var(--bg-panel);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow: none;
 }
 
 .hl-wrap {
@@ -605,10 +615,10 @@ async function copyJson(): Promise<void> {
   flex: 0 0 auto;
 }
 
-/* 1px 紫色聚焦光晕（替代原 3px 重描边） */
+/* 聚焦光晕走 accent token（此前硬编码亮紫，浅色主题下刺眼） */
 .hl-wrap:focus-within {
-  border-color: rgba(168, 85, 247, 0.6);
-  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.5);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 .hl-pre,
@@ -663,15 +673,15 @@ async function copyJson(): Promise<void> {
 /* ---- 查找标记 ---- */
 /* （.hl-* 语法色已收口到 style.css 全局单源，此处不再重复定义） */
 :deep(.rp-find-mark) {
-  background: var(--accent-tint, rgba(99, 102, 241, 0.25));
+  background: var(--accent-tint);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
 }
 :deep(.rp-find-mark.active) {
-  background: var(--accent, #a855f7);
-  color: #fff;
-  outline: 1px solid var(--accent, #a855f7);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  outline: 1px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -703,7 +713,7 @@ async function copyJson(): Promise<void> {
    * 行号与内容错位、行号先于内容走完 */
   height: calc(var(--fs-sm) * 1.55);
   line-height: calc(var(--fs-sm) * 1.55);
-  color: var(--tok-gutter, #5c6370);
+  color: var(--tok-gutter);
   text-align: right;
   padding-right: var(--code-gutter-gap);
 }
@@ -726,7 +736,7 @@ async function copyJson(): Promise<void> {
   align-items: center;
   gap: 4px;
   padding: 1px 6px;
-  border-radius: 9999px;
+  border-radius: var(--radius-pill);
   font-size: var(--fs-xxs);
   font-weight: 500;
   line-height: 1.4;
@@ -747,7 +757,7 @@ async function copyJson(): Promise<void> {
 .je-dot {
   width: 4px;
   height: 4px;
-  border-radius: 9999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 
@@ -766,7 +776,7 @@ async function copyJson(): Promise<void> {
   height: 24px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
@@ -781,12 +791,12 @@ async function copyJson(): Promise<void> {
   color: var(--text-1);
 }
 .je-btn.active {
-  background: var(--accent-tint, rgba(168, 85, 247, 0.15));
-  color: var(--accent, #a855f7);
-  border-color: var(--accent, #a855f7);
+  background: var(--accent-tint);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .je-btn:disabled {
-  opacity: 0.35;
+  opacity: var(--opacity-disabled);
   cursor: default;
 }
 </style>

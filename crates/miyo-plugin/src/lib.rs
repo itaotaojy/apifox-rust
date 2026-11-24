@@ -24,17 +24,19 @@
 
 pub mod builtin;
 pub mod compat;
+pub mod deps;
 pub mod manifest;
 pub mod package;
 pub mod permission;
 
 pub use builtin::{builtin_manifest, builtin_manifests, JAVA_DEBUG_PLUGIN_ID};
+pub mod market;
 pub use compat::{ensure_compatible, ensure_sdk_supported, is_compatible};
 pub use manifest::{
     PluginConfigField, PluginConfigFieldType, PluginConfigSchema, PluginKind, PluginManifest,
     PluginNavItem, PluginRuntimeDep, SUPPORTED_SDK_VERSION,
 };
-pub use package::{PackageInfo, OFFICIAL_SIGNING_PUBKEY_HEX};
+pub use package::{PackageInfo, TrustLevel, OFFICIAL_SIGNING_PUBKEYS};
 pub use permission::{
     lookup as lookup_permission, validate_permissions, PermissionDef, PermissionRisk,
 };

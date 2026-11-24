@@ -59,7 +59,7 @@ const form = reactive({
 })
 
 watch(
-  () => [props.open, props.editing, props.preset] as const,
+  [() => props.open, () => props.editing, () => props.preset],
   ([open, editing, preset]) => {
     if (!open) return
     // 关联项目下拉的数据源：dashboard 缓存为空（未走过 /projects）时兜底拉取。
@@ -124,6 +124,9 @@ async function save(): Promise<void> {
       id: props.editing?.id ?? crypto.randomUUID(),
       project_id: form.projectId || null,
       name: form.name.trim(),
+      mode: props.editing?.mode ?? 'runtime',
+      attach_pid: props.editing?.attach_pid ?? null,
+      vm_start_ms: props.editing?.vm_start_ms ?? null,
       runtime_endpoint: form.runtimeEndpoint.trim(),
       environment_id: form.environmentId || null,
       auth_token: tokenPayload ?? null,
@@ -289,8 +292,8 @@ async function testConnection(): Promise<void> {
   min-width: 0;
 }
 .jp-label {
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .jp-row {
   display: grid;
@@ -301,8 +304,8 @@ async function testConnection(): Promise<void> {
   min-width: 0;
 }
 .jp-hint {
-  font-size: 11px;
-  color: var(--text-tertiary, var(--text-secondary));
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
 }
 .jp-hint-err {
   color: var(--danger, #ef4444);
@@ -321,7 +324,7 @@ async function testConnection(): Promise<void> {
 }
 .jp-token-clear {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xxs);
   padding: 4px 9px;
 }
 .jp-actions {

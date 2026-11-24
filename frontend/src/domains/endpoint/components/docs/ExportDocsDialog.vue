@@ -292,7 +292,7 @@ async function startExport(): Promise<void> {
   background: var(--accent-tint);
 }
 .scope-card.disabled {
-  opacity: 0.45;
+  opacity: var(--opacity-disabled);
   cursor: default;
 }
 
@@ -404,6 +404,6 @@ async function startExport(): Promise<void> {
 }
 .variant-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 </style>

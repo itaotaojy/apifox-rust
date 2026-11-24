@@ -63,6 +63,82 @@ watch(
   },
 )
 
+// ---------- 完整性 / Sidecar 状态 / 版本历史 ----------
+
+const verifying = ref(false)
+async function onVerifyIntegrity(): Promise<void> {
+  const v = view.value
+  if (!v) return
+  verifying.value = true
+  try {
+    const ok = await invoke<boolean>(`${IPC_PREFIX}plugin_verify_integrity`, { id: v.id })
+    if (ok) toast.success(t('plugins.integrityOkToast'))
+    await manager.refreshInstalled()
+    emit('changed')
+  } catch (e) {
+    toast.error(t('plugins.integrityFailedToast'), { message: errorText(e) })
+  } finally {
+    verifying.value = false
+  }
+}
+
+interface SidecarStatusView {
+  plugin_id: string
+  pid: number
+  sidecar_version: string
+  restarts_last_hour: number
+}
+const sidecarStatus = ref<SidecarStatusView | null>(null)
+
+interface PluginVersionRow {
+  version: string
+  created_at: string
+  signed: boolean
+}
+const versionHistory = ref<PluginVersionRow[]>([])
+
+async function loadRuntimeInfo(): Promise<void> {
+  const v = view.value
+  if (!v) return
+  // sidecar 状态（ui-sidecar 形态才查）
+  if (v.kind === 'ui-sidecar') {
+    try {
+      const all = await invoke<SidecarStatusView[]>(`${IPC_PREFIX}plugin_sidecar_status`)
+      sidecarStatus.value = all.find((s) => s.plugin_id === v.id) ?? null
+    } catch {
+      sidecarStatus.value = null
+    }
+  } else {
+    sidecarStatus.value = null
+  }
+  // 版本历史（本地包才有回滚语义）
+  if (v.source !== 'builtin') {
+    try {
+      versionHistory.value = await invoke<PluginVersionRow[]>(`${IPC_PREFIX}plugin_versions`, {
+        id: v.id,
+      })
+    } catch {
+      versionHistory.value = []
+    }
+  } else {
+    versionHistory.value = []
+  }
+}
+
+async function onRollback(): Promise<void> {
+  const v = view.value
+  if (!v) return
+  try {
+    const done = await invoke<{ version: string }>(`${IPC_PREFIX}plugin_rollback`, { id: v.id })
+    toast.success(t('plugins.rollbackDoneToast', { version: done.version }))
+    await manager.refreshInstalled()
+    await loadRuntimeInfo()
+    emit('changed')
+  } catch (e) {
+    toast.error(t('plugins.rollbackFailed'), { message: errorText(e) })
+  }
+}
+
 // ---------- 权限 ----------
 
 /** 已批准集合（本地编辑态；保存即落库快照）。 */
@@ -85,6 +161,9 @@ async function savePermissions(): Promise<void> {
       id: v.id,
       grantedPermissions: grantedDraft.value,
     })
+    // 后端已吊销该插件全部会话（撤销即时生效）——本地凭证同步作废
+    sessionToken.value = null
+    configPluginId.value = null
     toast.success(t('plugins.permSavedToast'))
     await manager.refreshInstalled()
     emit('changed')
@@ -110,6 +189,25 @@ const configForm = ref<Record<string, unknown>>({})
 const configSaving = ref(false)
 const configLoaded = ref(false)
 
+/**
+ * 会话凭证：plugin_data_* 现为 std 族后端强制命令（token ↔ plugin_id 绑定）。
+ * 宿主管理界面与插件 SDK 同一模型——打开抽屉时按需换取，插件切换 / 停用后
+ * 重新签发（旧 token 随服务端吊销失效）。
+ */
+const sessionToken = ref<string | null>(null)
+
+async function ensureSession(id: string): Promise<string> {
+  if (sessionToken.value !== null && configPluginId.value === id) {
+    return sessionToken.value
+  }
+  const token = await invoke<string>(`${IPC_PREFIX}plugin_session_create`, { id })
+  sessionToken.value = token
+  configPluginId.value = id
+  return token
+}
+
+const configPluginId = ref<string | null>(null)
+
 async function loadConfig(): Promise<void> {
   const v = view.value
   if (!v) return
@@ -117,10 +215,14 @@ async function loadConfig(): Promise<void> {
     const raw = await invoke<unknown | null>(`${IPC_PREFIX}plugin_data_get`, {
       id: v.id,
       key: '__config',
+      sessionToken: await ensureSession(v.id),
     })
     configForm.value = (raw as Record<string, unknown>) ?? {}
     configLoaded.value = true
   } catch {
+    // 停用 / 会话失效：配置表单保持空态（详情页仍可查看元信息与权限）
+    sessionToken.value = null
+    configPluginId.value = null
     configForm.value = {}
     configLoaded.value = true
   }
@@ -135,6 +237,7 @@ async function saveConfig(): Promise<void> {
       id: v.id,
       key: '__config',
       value: configForm.value,
+      sessionToken: await ensureSession(v.id),
     })
     toast.success(t('plugins.configSavedToast'))
   } catch (e) {
@@ -203,11 +306,16 @@ function logTone(level: string): StatusTone {
 // ---------- 打开时加载 ----------
 
 watch(
-  () => [props.open, props.pluginId] as const,
+  [() => props.open, () => props.pluginId],
   ([open]) => {
     if (open) {
       void loadConfig()
       void loadLogs()
+      void loadRuntimeInfo()
+    } else {
+      // 关闭抽屉即释放本地凭证引用（服务端会话按 TTL / 吊销策略回收）
+      sessionToken.value = null
+      configPluginId.value = null
     }
   },
   { immediate: true },
@@ -277,7 +385,59 @@ function navRouteOf(item: PluginNavItem): string {
               :label="view.signed ? t('plugins.signed') : t('plugins.unsigned')"
             />
           </dd>
+          <dt>{{ t('plugins.filesVerified') }}</dt>
+          <dd>
+            <StatusBadge
+              :tone="view.files_verified ? 'ok' : view.last_verified_at ? 'fail' : 'wait'"
+              :label="
+                view.files_verified
+                  ? t('plugins.filesVerifiedOk')
+                  : view.last_verified_at
+                    ? t('plugins.filesVerifiedFail')
+                    : t('plugins.filesNeverVerified')
+              "
+            />
+            <span v-if="view.last_verified_at" class="pd-verified-at">
+              {{ t('plugins.lastVerifiedAt') }}: {{ view.last_verified_at.slice(0, 19).replace('T', ' ') }}
+            </span>
+          </dd>
         </dl>
+        <button
+          v-if="view.install_path"
+          class="miyo-btn miyo-btn-sm"
+          type="button"
+          :disabled="verifying"
+          @click="onVerifyIntegrity"
+        >
+          {{ verifying ? t('common.loading') : t('plugins.verifyIntegrity') }}
+        </button>
+        <!-- Sidecar 运行状态（ui-sidecar 形态） -->
+        <template v-if="view.kind === 'ui-sidecar'">
+          <div class="pd-sub">{{ t('plugins.sidecarSection') }}</div>
+          <dl v-if="sidecarStatus" class="pd-kv">
+            <dt>{{ t('plugins.sidecarPid') }}</dt>
+            <dd class="pd-mono">{{ sidecarStatus.pid }}</dd>
+            <dt>{{ t('plugins.sidecarVersion') }}</dt>
+            <dd class="pd-mono">{{ sidecarStatus.sidecar_version || '—' }}</dd>
+            <dt>{{ t('plugins.sidecarRestarts') }}</dt>
+            <dd class="pd-mono">{{ sidecarStatus.restarts_last_hour }}</dd>
+          </dl>
+          <p v-else class="pd-sidecar-off">{{ t('plugins.sidecarNotRunning') }}</p>
+        </template>
+        <!-- 版本历史 / 回滚 -->
+        <template v-if="view.source !== 'builtin'">
+          <div class="pd-sub">{{ t('plugins.historySection') }}</div>
+          <ul v-if="versionHistory.length" class="pd-nav-list">
+            <li v-for="h in versionHistory" :key="h.version + h.created_at" class="pd-nav-item">
+              <span class="pd-mono">v{{ h.version }}</span>
+              <span class="pd-verified-at">{{ h.created_at.slice(0, 19).replace('T', ' ') }}</span>
+              <button class="miyo-btn miyo-btn-sm" type="button" @click="onRollback">
+                {{ t('plugins.rollback') }}
+              </button>
+            </li>
+          </ul>
+          <p v-else class="pd-sidecar-off">{{ t('plugins.noHistory') }}</p>
+        </template>
         <template v-if="entry?.lastActivateMs !== null">
           <div class="pd-sub">{{ t('plugins.metricsSection') }}</div>
           <dl class="pd-kv">
@@ -405,7 +565,7 @@ function navRouteOf(item: PluginNavItem): string {
   color: var(--text-3);
 }
 .pd-runtime {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 .pd-desc {
@@ -446,7 +606,7 @@ function navRouteOf(item: PluginNavItem): string {
 
 .pd-sub {
   margin-top: 6px;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -469,11 +629,11 @@ function navRouteOf(item: PluginNavItem): string {
 }
 .pd-nav-route {
   color: var(--text-3);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
 }
 .pd-dep-desc {
   color: var(--text-3);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
 }
 
 .pd-err {
@@ -507,7 +667,7 @@ function navRouteOf(item: PluginNavItem): string {
   cursor: pointer;
 }
 .pd-perm-id {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -567,6 +727,17 @@ function navRouteOf(item: PluginNavItem): string {
 .pd-log-time {
   flex: none;
   color: var(--text-3);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
+}
+
+.pd-verified-at {
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
+  margin-left: 6px;
+}
+.pd-sidecar-off {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  padding: 4px 0;
 }
 </style>

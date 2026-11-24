@@ -2,10 +2,12 @@
   "id": "com.miyo.java-debug",
   "name": "Java 方法调试",
   "name_key": "pnav.javaDebug",
-  "description": "连接运行中的 Java 应用，发现并调用白名单方法，查看返回值、异常堆栈与耗时。",
+  "description": "自动发现本机 Java 进程，用户确认后注入调试 Agent（零源码修改），浏览类 / Bean / 方法并受控调用；兼容 Runtime (SDK) 模式。",
   "description_key": "plugins.javaDebugDesc",
   "version": "0.1.0",
-  "authors": ["Miyo"],
+  "authors": [
+    "Miyo"
+  ],
   "icon": "package",
   "kind": "ui",
   "min_app_version": "0.0.60",
@@ -25,13 +27,16 @@
     "std.notify",
     "std.log",
     "std.events",
-    "java.debug"
+    "java.process.discover",
+    "java.runtime.attach",
+    "java.class.inspect",
+    "java.method.invoke"
   ],
   "runtime_deps": [
     {
       "kind": "java",
       "min_version": "11",
-      "description": "目标应用内嵌 miyo-java-runtime SDK（Java 11+ 编译目标，兼容 Java 11+ 运行时）"
+      "description": "Attach 模式需本机有完整 JDK（jdk.attach / tools.jar）；Runtime (SDK) 模式需目标应用内嵌 miyo-java-runtime"
     }
   ],
   "config_schema": {
@@ -44,5 +49,10 @@
       }
     },
     "required": []
-  }
+  },
+  "storage_keys": [
+    "miyo.java.favorites",
+    "miyo.java.argsTemplates",
+    "miyo.javaAttach.favorites"
+  ]
 }

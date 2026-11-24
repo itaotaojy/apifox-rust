@@ -12,7 +12,19 @@ pub mod folder;
 pub mod grpc;
 pub mod history;
 pub mod import_export;
+#[cfg(feature = "java")]
+pub mod java_attach;
+#[cfg(feature = "java")]
+pub mod java_components;
+#[cfg(feature = "java")]
 pub mod java_debug;
+#[cfg(feature = "java")]
+pub mod java_gate;
+// 无 java 构建：30 条 java_* 命令占位（一律 FEATURE_UNAVAILABLE），
+// 令 lib.rs 命令清单与前端调用面零改动。
+pub mod java_stub_commands;
+#[cfg(not(feature = "java"))]
+pub use java_stub_commands::*;
 pub mod load_test;
 pub mod log;
 pub mod mock;
@@ -25,6 +37,7 @@ pub mod request_example;
 pub mod scenarios;
 pub mod seq;
 pub mod settings;
+pub mod sidecar;
 pub mod sync;
 pub mod team;
 pub mod test_case;
@@ -44,6 +57,11 @@ pub use folder::*;
 pub use grpc::*;
 pub use history::*;
 pub use import_export::*;
+#[cfg(feature = "java")]
+pub use java_attach::*;
+#[cfg(feature = "java")]
+pub use java_components::*;
+#[cfg(feature = "java")]
 pub use java_debug::*;
 pub use load_test::*;
 pub use log::*;
@@ -57,6 +75,7 @@ pub use request_example::*;
 pub use scenarios::*;
 pub use seq::*;
 pub use settings::*;
+pub use sidecar::*;
 pub use sync::*;
 pub use team::*;
 pub use test_case::*;

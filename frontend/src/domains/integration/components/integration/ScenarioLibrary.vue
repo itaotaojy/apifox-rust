@@ -8,7 +8,7 @@
  * - 操作：运行（直接跑最近保存的配置）/ 编辑 / 复制 / 导出 / 删除；
  * - 新建（可选分类）+ 导入（openDialog 选文件 → readTextFile → 解析入库）。
  */
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useLocaleStore } from '@/stores/locale'
@@ -26,6 +26,7 @@ import RunHistoryPanel from '@/domains/integration/components/integration/RunHis
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
 import Modal from '@/components/ui/Modal.vue'
+import SearchInput from '@/components/ui/SearchInput.vue'
 import Popconfirm from '@/components/ui/Popconfirm.vue'
 import { formatDurationShort } from '@/utils/format'
 import type {
@@ -43,12 +44,27 @@ const toast = useToast()
 const router = useRouter()
 
 // ---------- 搜索 + 分类过滤 + 状态过滤 + 排序 ----------
-const search = ref('')
-const categoryFilter = ref<string | null>(null)
+// 视图状态持久化在 integration store（libraryView）：进编辑器再返回时恢复
+// 搜索 / 筛选 / 排序 / 滚动位置（导航规范场景 A；store 跨路由存活，返回不重放请求）。
+const view = store.libraryView
+const search = computed({
+  get: () => view.search,
+  set: (v: string) => (view.search = v),
+})
+const categoryFilter = computed({
+  get: () => view.categoryFilter,
+  set: (v: string | null) => (view.categoryFilter = v),
+})
 /** 最近执行状态过滤：全部 | 通过 | 失败 | 未运行。 */
-const statusFilter = ref<'all' | 'ok' | 'fail' | 'none'>('all')
+const statusFilter = computed({
+  get: () => view.statusFilter,
+  set: (v: 'all' | 'ok' | 'fail' | 'none') => (view.statusFilter = v),
+})
 /** 排序：默认（编排序）| 名称 | 最近执行时间倒序。 */
-const sortBy = ref<'default' | 'name' | 'recent'>('default')
+const sortBy = computed({
+  get: () => view.sortBy,
+  set: (v: 'default' | 'name' | 'recent') => (view.sortBy = v),
+})
 
 /** 全部分类（去重、保序）。 */
 const categories = computed(() => {
@@ -142,6 +158,31 @@ function runSummaryText(r: ScenarioRunSummary | null | undefined): string {
 function goAiCreate(): void {
   void router.push('/ai-test')
 }
+
+// ---------- 列表滚动位置记忆（随 store.libraryView 跨路由存活） ----------
+const listEl = ref<HTMLElement | null>(null)
+
+function saveScroll(): void {
+  view.scrollTop = listEl.value?.scrollTop ?? 0
+  view.projectIdAtScroll = store.projectId
+}
+
+/** 返回列表恢复滚动：同项目且有记忆位置时恢复（列表项来自缓存，一帧内可渲染）。 */
+async function restoreScroll(): Promise<void> {
+  const top = view.scrollTop
+  if (top <= 0 || view.projectIdAtScroll !== store.projectId) return
+  await nextTick()
+  if (listEl.value) listEl.value.scrollTop = top
+}
+
+onMounted(() => {
+  listEl.value?.addEventListener('scroll', saveScroll, { passive: true })
+  void restoreScroll()
+})
+
+onBeforeUnmount(() => {
+  listEl.value?.removeEventListener('scroll', saveScroll)
+})
 
 // ---------- 项目级执行历史面板 ----------
 const historyPanelOpen = ref(false)
@@ -465,21 +506,9 @@ async function onImport(): Promise<void> {
 </script>
 
 <template>
-  <div class="lib-root">
+  <div ref="listEl" class="lib-root">
     <div class="lib-toolbar">
-      <div class="lib-search">
-        <Icon name="search" :size="12" class="lib-search-icon" />
-        <input
-          v-model="search"
-          class="lib-search-input"
-          type="text"
-          :placeholder="t('integration.libSearchPh')"
-          spellcheck="false"
-        />
-        <button v-if="search" class="lib-search-clear" type="button" :aria-label="t('common.clearSearch')" @click="search = ''">
-          <Icon name="x" :size="11" />
-        </button>
-      </div>
+      <SearchInput v-model="search" class="lib-search" :placeholder="t('integration.libSearchPh')" />
       <IconButton name="upload" :size="14" :title="t('integration.libImport')" @click="onImport" />
       <IconButton name="history" :size="14" :title="t('integration.histProjectTitle')" @click="historyPanelOpen = true" />
       <CustomSelect
@@ -583,7 +612,7 @@ async function onImport(): Promise<void> {
           />
           <span
             v-if="matrixProgress && runningMatrixScenarioId === s.id"
-            class="num text-xxs font-medium text-purple-600 dark:text-purple-400"
+            class="num text-xxs font-medium text-accent"
             :title="t('integration.matrixRunning', { done: matrixProgress.done, total: matrixProgress.total, label: matrixProgress.label })"
           >
             {{ matrixProgress.done }}/{{ matrixProgress.total }}
@@ -644,7 +673,7 @@ async function onImport(): Promise<void> {
     <div
       v-for="(row, i) in matrixResult?.rows ?? []"
       :key="row.key"
-      class="flex items-center justify-between gap-3 rounded-lg border border-zinc-200/70 px-3 py-2 dark:border-white/[0.06]"
+      class="mx-row"
     >
       <button
         type="button"
@@ -653,24 +682,47 @@ async function onImport(): Promise<void> {
       >
         <div class="flex items-center gap-2">
           <span
-            class="inline-block h-2 w-2 rounded-full"
-            :class="row.ok ? 'bg-emerald-500' : 'bg-red-500'"
+            class="mx-dot"
+            :class="row.ok ? 'mx-dot-ok' : 'mx-dot-fail'"
             aria-hidden="true"
           ></span>
-          <span class="text-xs font-medium text-zinc-900 dark:text-zinc-100">{{ row.label }}</span>
+          <span class="text-xs font-medium text-ink1">{{ row.label }}</span>
         </div>
-        <p class="mt-0.5 text-xxs text-zinc-500 dark:text-zinc-400">
+        <p class="mt-0.5 text-xxs text-ink3">
           {{ t('scenario.assertPassed', { n: row.okCount, m: row.okCount + row.failCount + row.skippedCount }) }}
           <template v-if="row.durationMs != null"> · {{ Math.round(row.durationMs) }}ms</template>
         </p>
       </button>
-      <code class="font-mono text-xxs text-zinc-400">{{ row.runId.slice(0, 8) }}</code>
+      <code class="font-mono text-xxs text-ink3">{{ row.runId.slice(0, 8) }}</code>
     </div>
   </div>
 </Modal>
 </template>
 
 <style scoped>
+/* 矩阵结果行卡（跟随主题 hairline token，禁止调色板字面量） */
+.mx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+}
+.mx-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.mx-dot-ok {
+  background: var(--success);
+}
+.mx-dot-fail {
+  background: var(--danger);
+}
+
 .lib-root {
   flex: 1;
   min-height: 0;
@@ -688,61 +740,10 @@ async function onImport(): Promise<void> {
   gap: 8px;
 }
 
+/* 搜索框：统一 SearchInput，仅保留布局占位 */
 .lib-search {
   flex: 1;
   max-width: 420px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
-}
-
-.lib-search:focus-within {
-  border-color: var(--accent);
-}
-
-.lib-search-icon {
-  flex: none;
-  color: var(--text-3);
-  opacity: 0.7;
-}
-
-.lib-search-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: var(--fs-xs);
-  color: var(--text-1);
-}
-
-.lib-search-input::placeholder {
-  color: var(--text-3);
-}
-
-.lib-search-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 16px;
-  height: 16px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 0;
-}
-
-.lib-search-clear:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
 }
 
 .lib-cats {
@@ -757,7 +758,7 @@ async function onImport(): Promise<void> {
   height: 24px;
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-2);
   font-size: var(--fs-xxs);
@@ -855,9 +856,9 @@ async function onImport(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: var(--fs-2xxs);
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent-tint);
   color: var(--accent);
 }
@@ -906,9 +907,9 @@ async function onImport(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: var(--fs-2xxs);
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border);
   color: var(--text-2);
   font-family: var(--font-mono);
@@ -944,7 +945,7 @@ async function onImport(): Promise<void> {
 
 .lib-empty-hint {
   margin: 0;
-  font-size: var(--fs-xxs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 </style>

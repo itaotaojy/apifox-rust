@@ -9,22 +9,24 @@
  *
  * UI 与 Miyo 设计体系同源：CSS 变量 + miyo-* 通用类；文案全部走 i18n。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
-import Brand from '@/domains/workspace/components/Brand.vue'
+import PageHeader from '@/components/navigation/PageHeader.vue'
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
+import SearchInput from '@/components/ui/SearchInput.vue'
 import Modal from '@/components/ui/Modal.vue'
 import StatusBadge, { type StatusTone } from '@/components/ui/StatusBadge.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
+import Switch from '@/components/ui/Switch.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import { useLocaleStore } from '@/stores/locale'
 import { useToast } from '@/composables/useToast'
 import { usePluginManager } from '@/plugins/manager'
-import { lookupPermission } from '@/plugins/permissions'
+import { highRiskPermissions, lookupPermission } from '@/plugins/permissions'
 import { errorText } from '@/utils/errorText'
 import type { PluginCatalogView } from '@/types/generated/PluginCatalogView'
 import type { PluginManifest } from '@/types/generated/PluginManifest'
@@ -41,7 +43,21 @@ const IPC_PREFIX = 'plugin:miyo|'
 
 // ---------- 页签 ----------
 type CenterTab = 'installed' | 'market'
-const tab = ref<CenterTab>('installed')
+/** 页签持久化：刷新后回到上次视图（非法值回已安装）。 */
+const tab = ref<CenterTab>((() => {
+  try {
+    return localStorage.getItem('miyo.plugins-tab') === 'market' ? 'market' : 'installed'
+  } catch {
+    return 'installed'
+  }
+})())
+watch(tab, (v) => {
+  try {
+    localStorage.setItem('miyo.plugins-tab', v)
+  } catch {
+    // 写失败静默
+  }
+})
 const tabItems = computed(() => [
   { value: 'installed', label: t('plugins.tabInstalled') },
   { value: 'market', label: t('plugins.tabMarket') },
@@ -51,6 +67,7 @@ const tabItems = computed(() => [
 onMounted(() => {
   void manager.refreshInstalled()
   void loadCatalog()
+  void loadMarketIndex()
   if (typeof route.query.blocked === 'string') {
     toast.toast({ type: 'warning', title: t('plugins.routeBlocked', { id: route.query.blocked }) })
     void router.replace({ path: '/plugins' })
@@ -67,6 +84,83 @@ async function loadCatalog(): Promise<void> {
     catalog.value = await manager.loadCatalog()
   } finally {
     catalogLoading.value = false
+  }
+}
+
+// ---------- 官方市场索引（静态；与内置目录合并展示） ----------
+
+/** 市场索引视图（Rust MarketIndexView 镜像：plugins + 签名信任级）。 */
+interface MarketIndexView {
+  schemaVersion: number
+  updatedAt: string
+  trust: 'official' | 'unsigned'
+  plugins: MarketEntryView[]
+}
+
+interface MarketEntryView {
+  id: string
+  name: string
+  version: string
+  authors: string[]
+  description: string
+  category: string
+  permissions: string[]
+  min_app_version: string
+  sdk_version: number
+  changelog: string
+  download_url: string
+}
+
+const marketEntries = ref<MarketEntryView[]>([])
+/** 市场索引信任级：official（官方签名）/ unsigned（随应用静态分发）。 */
+const marketTrust = ref<'official' | 'unsigned'>('unsigned')
+const marketQuery = ref('')
+const marketCategory = ref('all')
+const categories = computed(() => {
+  const set = new Set<string>()
+  for (const e of marketEntries.value) set.add(e.category)
+  return ['all', ...[...set].sort()]
+})
+
+async function loadMarketIndex(): Promise<void> {
+  try {
+    const view = await invoke<MarketIndexView>(`${IPC_PREFIX}plugin_market_index`)
+    marketEntries.value = view.plugins
+    marketTrust.value = view.trust === 'official' ? 'official' : 'unsigned'
+  } catch {
+    marketEntries.value = [] // 索引缺失不阻塞市场页（内置目录仍可用）
+    marketTrust.value = 'unsigned'
+  }
+}
+
+/** 市场渲染模型：索引条目优先，命中内置目录时用目录卡片（可安装/更新）。 */
+const marketItems = computed(() => {
+  const q = marketQuery.value.trim().toLowerCase()
+  return marketEntries.value
+    .filter((e) => marketCategory.value === 'all' || e.category === marketCategory.value)
+    .filter((e) => {
+      if (!q) return true
+      return (
+        e.name.toLowerCase().includes(q) ||
+        e.id.toLowerCase().includes(q) ||
+        e.description.toLowerCase().includes(q)
+      )
+    })
+    .map((entry) => ({
+      entry,
+      catalogEntry: catalog.value.find((c) => c.manifest.id === entry.id) ?? null,
+      installed: catalog.value.some((c) => c.manifest.id === entry.id),
+      compatible:
+        catalog.value.find((c) => c.manifest.id === entry.id)?.compatible ?? true,
+    }))
+})
+
+async function copyDownloadUrl(url: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url)
+    toast.success(t('plugins.copiedToast'))
+  } catch {
+    toast.error(t('plugins.copyDownloadUrl'))
   }
 }
 
@@ -109,14 +203,17 @@ async function onUpdate(entry: PluginCatalogView): Promise<void> {
 
 /** 待卸载插件（确认弹窗）。 */
 const uninstallTarget = ref<PluginView | null>(null)
+/** 「保留插件数据」勾选（默认保留：沿用既有口径；取消勾选 = 深度清理）。 */
+const uninstallKeepData = ref(true)
 function askUninstall(view: PluginView): void {
+  uninstallKeepData.value = true
   uninstallTarget.value = view
 }
 async function confirmUninstall(): Promise<void> {
   const target = uninstallTarget.value
   if (!target) return
   try {
-    await manager.uninstall(target.id)
+    await manager.uninstall(target.id, uninstallKeepData.value)
     toast.success(t('plugins.uninstalledToast', { name: displayNameOf(target.manifest) }))
     await loadCatalog()
   } catch (e) {
@@ -168,8 +265,44 @@ const inspection = ref<{
 } | null>(null)
 const trustUnsigned = ref(false)
 const inspecting = ref(false)
+/** 检视用途：install（本地新装）/ update（本地包更新）/ remote（市场远程）。 */
+const inspectMode = ref<'install' | 'update' | 'remote'>('install')
+const remoteInspecting = ref<string | null>(null)
+/** High 风险权限单独确认（用户勾选后安装 / 更新按钮才可用；每次检视重置）。 */
+const highRiskConfirmed = ref(false)
+/** 当前检视包声明的 High 风险权限（空 = 无需单独确认）。 */
+const inspectionHighRisk = computed(() =>
+  inspection.value ? highRiskPermissions(inspection.value.manifest.permissions) : [],
+)
 
-async function pickAndInspect(): Promise<void> {
+/** 市场远程安装：下载 → 检视缓存（后端）→ 复用确认弹窗 → 确认后从缓存安装。 */
+async function onRemoteInstall(entry: {
+  id: string
+  name: string
+  version: string
+  download_url: string
+  permissions: string[]
+}): Promise<void> {
+  remoteInspecting.value = entry.id
+  try {
+    const info = await invoke<{
+      manifest: PluginManifest
+      integrity: string
+      signed: boolean
+      origin: string
+    }>(`${IPC_PREFIX}plugin_inspect_from_url`, { url: entry.download_url })
+    inspection.value = { ...info, path: entry.download_url }
+    trustUnsigned.value = false
+    highRiskConfirmed.value = false
+  } catch (e) {
+    toast.error(t('plugins.downloadFailed'), { message: errorText(e) })
+  } finally {
+    remoteInspecting.value = null
+  }
+}
+
+async function pickAndInspect(mode: 'install' | 'update' = 'install'): Promise<void> {
+  inspectMode.value = mode
   const picked = await open({
     multiple: false,
     directory: false,
@@ -186,6 +319,7 @@ async function pickAndInspect(): Promise<void> {
     }>(`${IPC_PREFIX}plugin_inspect_package`, { path: picked })
     inspection.value = { ...info, path: picked }
     trustUnsigned.value = false
+    highRiskConfirmed.value = false
   } catch (e) {
     toast.error(t('plugins.inspectFailed'), { message: errorText(e) })
   } finally {
@@ -198,20 +332,63 @@ async function confirmInstallFile(): Promise<void> {
   const pkg = inspection.value
   if (!pkg) return
   if (!pkg.signed && !trustUnsigned.value) return
+  // High 风险权限单独确认（PERMISSIONS.md 口径：确认页明示 + High 单独勾选）
+  if (inspectionHighRisk.value.length > 0 && !highRiskConfirmed.value) return
   installFileBusy.value = true
   try {
-    await invoke(`${IPC_PREFIX}plugin_install_from_path`, {
-      path: pkg.path,
-      trustUnsigned: pkg.signed ? undefined : true,
-    })
-    toast.success(t('plugins.installedToast', { name: displayNameOf(pkg.manifest) }))
+    if (inspectMode.value === 'remote') {
+      await invoke(`${IPC_PREFIX}plugin_install_from_cached`, {
+        url: pkg.path,
+        trustUnsigned: pkg.signed ? undefined : true,
+      })
+      toast.success(t('plugins.installedToast', { name: displayNameOf(pkg.manifest) }))
+    } else if (inspectMode.value === 'update') {
+      await invoke(`${IPC_PREFIX}plugin_update_from_path`, {
+        path: pkg.path,
+        trustUnsigned: pkg.signed ? undefined : true,
+      })
+      toast.success(t('plugins.updatedToast', { name: displayNameOf(pkg.manifest) }))
+    } else {
+      await invoke(`${IPC_PREFIX}plugin_install_from_path`, {
+        path: pkg.path,
+        trustUnsigned: pkg.signed ? undefined : true,
+      })
+      toast.success(t('plugins.installedToast', { name: displayNameOf(pkg.manifest) }))
+    }
     inspection.value = null
     await manager.refreshInstalled()
     tab.value = 'installed'
   } catch (e) {
-    toast.error(t('plugins.installFailed'), { message: errorText(e) })
+    toast.error(
+      t(
+        inspectMode.value === 'update'
+          ? 'plugins.updateFailed'
+          : inspectMode.value === 'remote'
+            ? 'plugins.installFailed'
+            : 'plugins.installFailed',
+      ),
+      { message: errorText(e) },
+    )
   } finally {
     installFileBusy.value = false
+  }
+}
+
+// ---------- 本地包回滚（确认流） ----------
+
+const rollbackTarget = ref<PluginView | null>(null)
+async function confirmRollback(): Promise<void> {
+  const target = rollbackTarget.value
+  if (!target) return
+  try {
+    const done = await invoke<{ version: string }>(`${IPC_PREFIX}plugin_rollback`, { id: target.id })
+    toast.success(t('plugins.rollbackDoneToast', { version: done.version }))
+    await manager.refreshInstalled()
+    await loadCatalog()
+  } catch (e) {
+    toast.error(t('plugins.rollbackFailed'), { message: errorText(e) })
+  } finally {
+    rollbackTarget.value = null
   }
 }
 
@@ -256,20 +433,17 @@ function closeDetail(): void {
 
 <template>
   <div class="pg-root">
-    <header class="pg-topbar">
-      <Brand :title="t('plugins.title')" class="pg-brand" />
-      <button class="miyo-btn miyo-btn-sm" type="button" @click="router.push('/projects')">
-        ← {{ t('plugins.back') }}
-      </button>
-      <div class="pg-topbar-spacer"></div>
+    <PageHeader :title="t('plugins.title')">
       <SegmentedControl v-model="tab" :options="tabItems" size="sm" />
-      <IconButton
-        name="upload"
-        :size="15"
-        :title="t('plugins.installFromFile')"
-        @click="pickAndInspect"
-      />
-    </header>
+      <template #actions>
+        <IconButton
+          name="upload"
+          :size="15"
+          :title="t('plugins.installFromFile')"
+          @click="pickAndInspect('install')"
+        />
+      </template>
+    </PageHeader>
 
     <main class="pg-body">
       <!-- 已安装 -->
@@ -326,16 +500,29 @@ function closeDetail(): void {
             >
               {{ t('plugins.recover') }}
             </button>
-            <label class="pg-switch" :title="t(e.view.enabled ? 'plugins.disableAction' : 'plugins.enableAction')">
-              <input
-                type="checkbox"
-                role="switch"
-                :checked="e.view.enabled"
-                :disabled="toggling === e.view.id"
-                @change="onToggle(e.view, ($event.target as HTMLInputElement).checked)"
-              />
-              <span class="pg-switch-track" aria-hidden="true"></span>
-            </label>
+            <button
+              v-if="e.view.source !== 'builtin'"
+              class="miyo-btn miyo-btn-sm"
+              type="button"
+              :title="t('plugins.updateFromPath')"
+              @click="pickAndInspect('update')"
+            >
+              {{ t('plugins.updateFromPath') }}
+            </button>
+            <Switch
+              :model-value="e.view.enabled"
+              size="sm"
+              :disabled="toggling === e.view.id"
+              :label="t(e.view.enabled ? 'plugins.disableAction' : 'plugins.enableAction')"
+              @change="onToggle(e.view, $event)"
+            />
+            <IconButton
+              v-if="e.view.source !== 'builtin'"
+              name="history"
+              :size="15"
+              :title="t('plugins.rollback')"
+              @click="rollbackTarget = e.view"
+            />
             <IconButton name="trash" :size="15" tone="danger" :title="t('plugins.uninstallAction')" @click="askUninstall(e.view)" />
           </div>
         </article>
@@ -343,33 +530,64 @@ function closeDetail(): void {
 
       <!-- 市场 -->
       <section v-else class="pg-list" aria-label="market">
+        <div class="pg-market-tools">
+          <SearchInput
+            v-model="marketQuery"
+            size="md"
+            class="pg-market-search"
+            :placeholder="t('plugins.marketSearch')"
+          />
+          <!-- 索引信任徽章：官方签名 / 随应用静态分发 -->
+          <span
+            class="pg-market-trust"
+            :class="{ official: marketTrust === 'official' }"
+            :title="marketTrust === 'official' ? t('plugins.marketTrustOfficialHint') : t('plugins.marketTrustUnsignedHint')"
+          >
+            {{ marketTrust === 'official' ? t('plugins.marketTrustOfficial') : t('plugins.marketTrustUnsigned') }}
+          </span>
+          <div class="pg-market-cats">
+            <button
+              v-for="c in categories"
+              :key="c"
+              class="pg-cat-chip"
+              :class="{ active: marketCategory === c }"
+              type="button"
+              @click="marketCategory = c"
+            >
+              {{ c === 'all' ? t('plugins.marketAllCategories') : t(`plugins.category${c.charAt(0).toUpperCase() + c.slice(1)}`) }}
+            </button>
+          </div>
+        </div>
         <div v-if="catalogLoading" class="pg-loading"><Spinner /></div>
         <EmptyState
-          v-else-if="catalog.length === 0"
+          v-else-if="marketItems.length === 0"
           icon="package"
           :title="t('plugins.emptyMarket')"
           :description="t('plugins.emptyMarketHint')"
         />
-        <article v-for="entry in catalog" v-else :key="entry.manifest.id" class="pg-card">
+        <article v-for="item in marketItems" v-else :key="item.entry.id" class="pg-card">
           <div class="pg-card-main pg-card-static">
-            <img v-if="iconOf(entry.manifest)?.startsWith('data:image/')" class="pg-icon" :src="iconOf(entry.manifest)!" alt="" />
-            <Icon v-else-if="iconOf(entry.manifest)" :name="(iconOf(entry.manifest) as never)" :size="18" />
             <div class="pg-card-text">
               <div class="pg-card-title">
-                <span class="pg-name">{{ displayNameOf(entry.manifest) }}</span>
-                <span class="pg-ver">v{{ entry.manifest.version }}</span>
-                <span class="pg-src">{{ t('plugins.sourceBuiltin') }}</span>
+                <span class="pg-name">{{ item.entry.name }}</span>
+                <span class="pg-ver">v{{ item.entry.version }}</span>
+                <span class="pg-src">{{ t(`plugins.category${item.entry.category.charAt(0).toUpperCase() + item.entry.category.slice(1)}`) }}</span>
                 <StatusBadge
-                  v-if="!entry.compatible"
+                  v-if="item.installed"
+                  tone="ok"
+                  :label="t('plugins.upToDate')"
+                />
+                <StatusBadge
+                  v-else-if="!item.compatible"
                   tone="fail"
-                  :label="t('plugins.incompatible', { v: entry.manifest.min_app_version })"
+                  :label="t('plugins.incompatible', { v: item.entry.min_app_version })"
                 />
               </div>
-              <p class="pg-desc">{{ descriptionOf(entry.manifest) }}</p>
+              <p class="pg-desc">{{ item.entry.description }}</p>
               <!-- 权限声明：安装前明示（最小知情） -->
               <div class="pg-perms-row">
                 <span
-                  v-for="p in entry.manifest.permissions"
+                  v-for="p in item.entry.permissions"
                   :key="p"
                   class="pg-perm-chip"
                   :class="`risk-${lookupPermission(p)?.risk ?? 'low'}`"
@@ -381,30 +599,53 @@ function closeDetail(): void {
             </div>
           </div>
           <div class="pg-card-actions">
-            <template v-if="!entry.installed">
-              <button
-                class="miyo-btn miyo-btn-sm miyo-btn-primary"
-                type="button"
-                :disabled="installing || !entry.compatible"
-                @click="onInstall(entry)"
-              >
-                {{ t('plugins.installAction') }}
-              </button>
+            <template v-if="item.catalogEntry">
+              <template v-if="!item.catalogEntry.installed">
+                <button
+                  class="miyo-btn miyo-btn-sm miyo-btn-primary"
+                  type="button"
+                  :disabled="installing || !item.compatible"
+                  @click="onInstall(item.catalogEntry)"
+                >
+                  {{ t('plugins.installAction') }}
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  v-if="updateAvailable(item.catalogEntry)"
+                  class="miyo-btn miyo-btn-sm miyo-btn-primary"
+                  type="button"
+                  :disabled="installing"
+                  @click="onUpdate(item.catalogEntry)"
+                >
+                  {{ t('plugins.updateAction', { v: item.catalogEntry.manifest.version }) }}
+                </button>
+                <StatusBadge v-else tone="ok" :label="t('plugins.upToDate')" />
+              </template>
             </template>
             <template v-else>
               <button
-                v-if="updateAvailable(entry)"
                 class="miyo-btn miyo-btn-sm miyo-btn-primary"
                 type="button"
-                :disabled="installing"
-                @click="onUpdate(entry)"
+                :disabled="remoteInspecting !== null"
+                @click="onRemoteInstall(item.entry)"
               >
-                {{ t('plugins.updateAction', { v: entry.manifest.version }) }}
+                {{
+                  remoteInspecting === item.entry.id
+                    ? t('plugins.remoteDownloading')
+                    : t('plugins.remoteInstall')
+                }}
               </button>
-              <StatusBadge v-else tone="ok" :label="t('plugins.upToDate')" />
+              <IconButton
+                name="copy"
+                :size="15"
+                :title="t('plugins.copyDownloadUrl')"
+                @click="copyDownloadUrl(item.entry.download_url)"
+              />
             </template>
           </div>
         </article>
+        <p class="pg-market-guide">{{ t('plugins.marketSourceGuide') }}</p>
       </section>
     </main>
 
@@ -422,6 +663,13 @@ function closeDetail(): void {
         {{ t('plugins.uninstallConfirm', { name: uninstallTarget ? displayNameOf(uninstallTarget.manifest) : '' }) }}
       </p>
       <p class="pg-confirm-hint">{{ t('plugins.uninstallHint') }}</p>
+      <label class="pg-keep-data">
+        <Switch v-model="uninstallKeepData" size="sm" :label="t('plugins.keepData')" />
+        <span class="pg-keep-data-text">
+          {{ t('plugins.keepData') }}
+          <span class="pg-keep-data-hint">{{ t('plugins.keepDataHint') }}</span>
+        </span>
+      </label>
       <template #footer>
         <button class="miyo-btn miyo-btn-sm" type="button" @click="uninstallTarget = null">
           {{ t('common.cancel') }}
@@ -432,10 +680,35 @@ function closeDetail(): void {
       </template>
     </Modal>
 
+    <!-- 回滚确认 -->
+    <Modal
+      :open="!!rollbackTarget"
+      :title="t('plugins.rollbackConfirmTitle')"
+      width="440px"
+      @update:open="(v: boolean) => { if (!v) rollbackTarget = null }"
+    >
+      <p class="pg-confirm-text">
+        {{
+          t('plugins.rollbackConfirmBody', {
+            version: rollbackTarget ? `v${rollbackTarget.version}` : '',
+            at: rollbackTarget ? rollbackTarget.updated_at : '',
+          })
+        }}
+      </p>
+      <template #footer>
+        <button class="miyo-btn miyo-btn-sm" type="button" @click="rollbackTarget = null">
+          {{ t('common.cancel') }}
+        </button>
+        <button class="miyo-btn miyo-btn-sm miyo-btn-danger" type="button" @click="confirmRollback">
+          {{ t('plugins.rollback') }}
+        </button>
+      </template>
+    </Modal>
+
     <!-- 本地包安装确认 -->
     <Modal
       :open="!!inspection"
-      :title="t('plugins.inspectTitle')"
+      :title="inspectMode === 'update' ? t('plugins.updateFromPath') : t('plugins.inspectTitle')"
       width="520px"
       @update:open="(v: boolean) => { if (!v) inspection = null }"
     >
@@ -443,7 +716,13 @@ function closeDetail(): void {
         <div class="pg-inspect-head">
           <strong>{{ displayNameOf(inspection.manifest) }}</strong>
           <span class="pg-ver">v{{ inspection.manifest.version }}</span>
-          <span class="pg-src">{{ inspection.origin === 'package' ? t('plugins.originPackage') : t('plugins.originDirectory') }}</span>
+          <span class="pg-src">{{
+            inspection.origin === 'package'
+              ? t('plugins.originPackage')
+              : inspection.origin === 'remote'
+                ? t('plugins.originRemote')
+                : t('plugins.originDirectory')
+          }}</span>
           <StatusBadge :tone="inspection.signed ? 'ok' : 'warn'" :label="inspection.signed ? t('plugins.signed') : t('plugins.unsigned')" />
         </div>
         <p class="pg-desc">{{ descriptionOf(inspection.manifest) }}</p>
@@ -456,6 +735,12 @@ function closeDetail(): void {
             <span class="pg-perm-id">{{ p }}</span>
           </li>
         </ul>
+        <!-- High 风险权限单独确认（文档承诺项）：存在 High 声明时必须显式勾选，
+             安装 / 更新按钮才可用——与未签名信任勾选相互独立。 -->
+        <label v-if="inspectionHighRisk.length > 0" class="pg-trust pg-trust-high">
+          <input v-model="highRiskConfirmed" type="checkbox" />
+          <span>{{ t('plugins.confirmHighRisk', { count: inspectionHighRisk.length }) }}</span>
+        </label>
         <label v-if="!inspection.signed" class="pg-trust">
           <input v-model="trustUnsigned" type="checkbox" />
           <span>{{ t('plugins.trustUnsigned') }}</span>
@@ -471,10 +756,14 @@ function closeDetail(): void {
         <button
           class="miyo-btn miyo-btn-sm miyo-btn-primary"
           type="button"
-          :disabled="installFileBusy || (!inspection?.signed && !trustUnsigned)"
+          :disabled="
+            installFileBusy ||
+            (!inspection?.signed && !trustUnsigned) ||
+            (inspectionHighRisk.length > 0 && !highRiskConfirmed)
+          "
           @click="confirmInstallFile"
         >
-          {{ t('plugins.installConfirm') }}
+          {{ t(inspectMode === 'update' ? 'plugins.updateFromPath' : 'plugins.installConfirm') }}
         </button>
       </template>
     </Modal>
@@ -489,28 +778,6 @@ function closeDetail(): void {
   min-height: 0;
   background: var(--bg-app);
   color: var(--text-1);
-}
-
-.pg-topbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px 8px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  -webkit-app-region: drag;
-}
-.pg-topbar > * {
-  -webkit-app-region: no-drag;
-}
-.pg-topbar-spacer {
-  flex: 1;
-}
-.pg-brand {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 280px;
 }
 
 .pg-body {
@@ -528,6 +795,41 @@ function closeDetail(): void {
   margin: 0 auto;
 }
 
+.pg-market-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+/* 搜索框：统一 SearchInput，仅保留通栏占位 */
+.pg-market-search {
+  width: 100%;
+}
+.pg-market-cats {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pg-cat-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-md);
+  padding: 3px 10px;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.pg-cat-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent, #fff);
+}
+.pg-market-guide {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  text-align: center;
+  padding: 8px 0 16px;
+}
 .pg-loading {
   display: flex;
   justify-content: center;
@@ -595,7 +897,7 @@ function closeDetail(): void {
   font-weight: 600;
 }
 .pg-ver {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
   font-family: var(--font-mono);
 }
@@ -623,7 +925,7 @@ function closeDetail(): void {
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -640,49 +942,43 @@ function closeDetail(): void {
   gap: 10px;
 }
 
-/* 启停开关（极简轨道式） */
-.pg-switch {
-  position: relative;
-  display: inline-flex;
-  cursor: pointer;
-}
-.pg-switch input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.pg-switch-track {
-  width: 34px;
-  height: 20px;
+/* 市场索引信任徽章 */
+.pg-market-trust {
+  flex-shrink: 0;
+  padding: 3px 10px;
   border-radius: var(--radius-pill);
-  background: var(--bg-active);
   border: 1px solid var(--border);
-  position: relative;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  font-size: var(--fs-2xxs);
+  color: var(--text-3);
+  cursor: help;
 }
-.pg-switch-track::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--text-3);
-  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+.pg-market-trust.official {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  color: var(--success);
+  background: var(--success-tint);
 }
-.pg-switch input:checked + .pg-switch-track {
-  background: var(--accent);
-  border-color: var(--accent);
+
+/* 卸载「保留插件数据」勾选行 */
+.pg-keep-data {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
 }
-.pg-switch input:checked + .pg-switch-track::after {
-  transform: translateX(14px);
-  background: #fff;
+.pg-keep-data-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-1);
 }
-.pg-switch input:focus-visible + .pg-switch-track {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.pg-keep-data-hint {
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
 }
 
 /* 权限 chip（风险着色） */
@@ -732,7 +1028,7 @@ function closeDetail(): void {
 }
 .pg-inspect-section {
   margin: 14px 0 6px;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -751,7 +1047,7 @@ function closeDetail(): void {
   gap: 10px;
 }
 .pg-perm-id {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
   font-family: var(--font-mono);
 }
@@ -764,9 +1060,13 @@ function closeDetail(): void {
   color: var(--text-2);
   cursor: pointer;
 }
+/* High 风险确认行：危险色强调（与权限 chip 的 risk-high 同色系）。 */
+.pg-trust-high {
+  color: var(--danger);
+}
 .pg-integrity {
   margin: 10px 0 0;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-3);
   font-family: var(--font-mono);
   overflow: hidden;

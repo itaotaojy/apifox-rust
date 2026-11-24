@@ -30,6 +30,8 @@ const hostBridge: PluginHostBridge = {
   unregisterNav: vi.fn(),
   registerRoute: vi.fn(),
   unregisterRoute: vi.fn(),
+  registerCommand: vi.fn(),
+  unregisterCommand: vi.fn(),
 }
 
 describe('RPC 协议帧校验', () => {
@@ -89,8 +91,11 @@ describe('HostRpcBridge 分发', () => {
     return { bridge, outFrames, session }
   }
 
-  it('合法请求 → 成功响应帧（storage 透传 pluginId）', async () => {
-    invokeMock.mockResolvedValue(['a', 'b'])
+  it('合法请求 → 成功响应帧（storage 透传 pluginId + sessionToken）', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'plugin:miyo|plugin_session_create') return Promise.resolve('tok-bridge')
+      return Promise.resolve(['a', 'b'])
+    })
     const { bridge, outFrames } = makeRealBridge()
     bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'r1', method: 'storage.keys' })
     await vi.waitFor(() => expect(outFrames).toHaveLength(1))
@@ -101,7 +106,10 @@ describe('HostRpcBridge 分发', () => {
       ok: true,
       result: ['a', 'b'],
     })
-    expect(invokeMock).toHaveBeenCalledWith('plugin:miyo|plugin_data_keys', { id: 'com.miyo.java-debug' })
+    expect(invokeMock).toHaveBeenCalledWith('plugin:miyo|plugin_data_keys', {
+      id: 'com.miyo.java-debug',
+      sessionToken: 'tok-bridge',
+    })
   })
 
   it('未知帧静默丢弃（不回错误帧）', () => {
@@ -147,14 +155,17 @@ describe('HostRpcBridge 分发', () => {
 
   it('SDK 挂起 → 超时错误帧', async () => {
     // commands.invoke 走 IPC（config.get 是同步内存读取，不会挂起）
-    invokeMock.mockImplementation(() => new Promise(() => undefined)) // 永不 resolve
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'plugin:miyo|plugin_session_create') return Promise.resolve('tok-t')
+      return new Promise(() => undefined) // 永不 resolve
+    })
     const { bridge, outFrames } = makeRealBridge(50)
     bridge.handleMessage({
       v: RPC_VERSION,
       type: 'req',
       id: 'r4',
       method: 'commands.invoke',
-      params: { command: 'list_java_projects' },
+      params: { command: 'java_invoke' },
     })
     await vi.waitFor(() => expect(outFrames).toHaveLength(1))
     const frame = outFrames[0] as { ok: boolean; error: { code: string } }
@@ -188,5 +199,165 @@ describe('HostRpcBridge 分发', () => {
     const spy = vi.spyOn(bridge, 'dispose')
     bridge.dispose()
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  // ---------------- RPC 加固（Phase 2 安全地基） ----------------
+
+  it('重放防护：同一请求 ID 二次到达被丢弃', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'plugin:miyo|plugin_session_create') return Promise.resolve('tok-r')
+      return Promise.resolve(null)
+    })
+    const { bridge, outFrames } = makeRealBridge()
+    const frame = { v: RPC_VERSION, type: 'req', id: 'dup-1', method: 'config.get' }
+    bridge.handleMessage(frame)
+    await vi.waitFor(() => expect(outFrames).toHaveLength(1))
+    bridge.handleMessage(frame) // 重放
+    bridge.handleMessage({ ...frame }) // 内容相同、对象不同——同 id
+    await new Promise((r) => setTimeout(r, 20))
+    expect(outFrames).toHaveLength(1) // 只有一次响应
+  })
+
+  it('帧体积上限：超限静默丢弃', () => {
+    const { bridge, outFrames } = makeRealBridge()
+    bridge.handleMessage({
+      v: RPC_VERSION,
+      type: 'req',
+      id: 'big-1',
+      method: 'config.set',
+      params: { values: { blob: 'x'.repeat(1_100_000) } },
+    })
+    expect(outFrames).toHaveLength(0)
+  })
+
+  it('JSON 深度上限 → BAD_REQUEST', async () => {
+    const { bridge, outFrames } = makeRealBridge()
+    let deep: unknown = 'leaf'
+    for (let i = 0; i < 20; i++) deep = { v: deep }
+    bridge.handleMessage({
+      v: RPC_VERSION,
+      type: 'req',
+      id: 'deep-1',
+      method: 'config.set',
+      params: { values: deep as Record<string, unknown> },
+    })
+    await vi.waitFor(() => expect(outFrames).toHaveLength(1))
+    const frame = outFrames[0] as { ok: boolean; error: { code: string } }
+    expect(frame.error.code).toBe(RPC_ERRORS.BAD_REQUEST)
+  })
+
+  it('并发上限：超出在途数的请求立即 RATE_LIMITED', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'plugin:miyo|plugin_session_create') return Promise.resolve('tok-c')
+      return new Promise(() => undefined) // 挂起占满在途
+    })
+    const { bridge, outFrames } = makeRealBridge(5_000)
+    for (let i = 0; i < 20; i++) {
+      bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: `in-${i}`, method: 'config.get' })
+    }
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'over', method: 'config.get' })
+    await vi.waitFor(() =>
+      expect(outFrames.some((f) => (f as { id: string }).id === 'over')).toBe(true),
+    )
+    const frame = outFrames.find((f) => (f as { id: string }).id === 'over') as {
+      ok: boolean
+      error: { code: string }
+    }
+    expect(frame.error.code).toBe(RPC_ERRORS.RATE_LIMITED)
+  })
+
+  it('订阅上限：超过 32 个订阅报错', async () => {
+    const { bridge, outFrames } = makeRealBridge()
+    // 逐条让出微任务（dispatch 是异步的；同步连发会先撞并发上限）
+    for (let i = 0; i < 33; i++) {
+      bridge.handleMessage({
+        v: RPC_VERSION,
+        type: 'req',
+        id: `sub-${i}`,
+        method: 'events.subscribe',
+        params: { event: `e${i}` },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    await vi.waitFor(() => expect(outFrames.length).toBeGreaterThanOrEqual(33))
+    const over = outFrames.find((f) => (f as { id: string }).id === "sub-32") as {
+      ok: boolean
+      error: { code: string; message: string }
+    }
+    expect(over.ok).toBe(false)
+    expect(over.error.message).toContain('PLUGIN_SUBSCRIPTION_LIMIT')
+  })
+
+  it('nonce：携带不匹配 n 的帧被静默丢弃；v1 无 n 帧保持兼容', () => {
+    const outFrames: unknown[] = []
+    const session = createPluginSession(javaView(), hostBridge)
+    const bridge = new HostRpcBridge({
+      sourceWindow: fakeWindow,
+      postMessage: (frame) => outFrames.push(frame),
+      session,
+      timeoutMs: 500,
+      nonce: 'abc123',
+    })
+    // 带错 nonce → 丢弃
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'n-bad', method: 'config.get', n: 'wrong' })
+    // 带对 nonce → 正常处理
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'n-ok', method: 'config.get', n: 'abc123' })
+    // 不带 nonce（v1 插件）→ 兼容放行
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'n-legacy', method: 'config.get' })
+    return vi.waitFor(() => {
+      const ids = outFrames.map((f) => (f as { id: string }).id)
+      expect(ids).toContain('n-ok')
+      expect(ids).toContain('n-legacy')
+      expect(ids).not.toContain('n-bad')
+    })
+  })
+
+  it('熔断：错误风暴后进入打开期（RATE_LIMITED 快速失败）', async () => {
+    invokeMock.mockRejectedValue({ code: 'INTERNAL', message: 'boom' })
+    const { bridge, outFrames } = makeRealBridge()
+    // 逐条等待分发落地（错误计入熔断窗口；同步连发会先撞并发上限）
+    for (let i = 0; i < 50; i++) {
+      bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: `err-${i}`, method: 'storage.keys' })
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    await vi.waitFor(() => expect(outFrames.length).toBeGreaterThanOrEqual(50))
+    // 第 51 次请求：熔断打开 → RATE_LIMITED（不再触发 SDK / IPC）
+    const before = invokeMock.mock.calls.length
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'post-breaker', method: 'config.get' })
+    await vi.waitFor(() =>
+      expect(outFrames.some((f) => (f as { id: string }).id === 'post-breaker')).toBe(true),
+    )
+    const frame = outFrames.find((f) => (f as { id: string }).id === 'post-breaker') as {
+      ok: boolean
+      error: { code: string }
+    }
+    expect(frame.error.code).toBe(RPC_ERRORS.RATE_LIMITED)
+    expect(invokeMock.mock.calls.length).toBe(before) // 熔断期不经 IPC
+  })
+
+  it('取消：cancel 后真实结果到达不回执；未知 id 静默忽略', async () => {
+    // 挂起直到手动放行：保证请求处于在途态
+    let release: (v: string[]) => void = () => {}
+    const gate = new Promise<string[]>((resolve) => {
+      release = resolve
+    })
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'plugin:miyo|plugin_session_create') return Promise.resolve('tok-bridge')
+      if (cmd.endsWith('plugin_data_keys')) return gate
+      return Promise.resolve([])
+    })
+    const { bridge, outFrames } = makeRealBridge()
+    bridge.handleMessage({ v: RPC_VERSION, type: 'req', id: 'c1', method: 'storage.keys' })
+    await vi.waitFor(() => expect(invokeMock.mock.calls.length).toBeGreaterThan(0))
+
+    // 发 cancel → 真实结果稍后到达 → 不回执
+    bridge.handleMessage({ v: RPC_VERSION, type: 'cancel', id: 'c1' })
+    release(['x'])
+    await new Promise((r) => setTimeout(r, 10))
+    expect(outFrames.some((f) => (f as { id: string }).id === 'c1')).toBe(false)
+
+    // 未知 id 的 cancel：静默忽略（不崩、无副作用）
+    bridge.handleMessage({ v: RPC_VERSION, type: 'cancel', id: 'unknown-id' })
+    expect(bridge.handleMessage({ v: RPC_VERSION, type: 'cancel', id: 'unknown-id' })).toBeUndefined()
   })
 })

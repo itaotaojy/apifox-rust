@@ -5,6 +5,7 @@
 //! - `last_info_json` 是握手缓存（非权威），仅用于列表页快速展示。
 //! - 调用历史按项目滚动保留（`prune_java_invocations`），插入方负责触发。
 
+use crate::db::db_err;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -18,6 +19,9 @@ struct JavaProjectRow {
     id: String,
     project_id: Option<String>,
     name: String,
+    mode: String,
+    attach_pid: Option<i64>,
+    vm_start_ms: Option<i64>,
     runtime_endpoint: String,
     environment_id: Option<String>,
     auth_json: String,
@@ -39,6 +43,9 @@ impl JavaProjectRow {
             id: parse_uuid(&self.id)?,
             project_id: self.project_id.map(|v| parse_uuid(&v)).transpose()?,
             name: self.name,
+            mode: self.mode,
+            attach_pid: self.attach_pid,
+            vm_start_ms: self.vm_start_ms,
             runtime_endpoint: self.runtime_endpoint,
             environment_id: self.environment_id.map(|v| parse_uuid(&v)).transpose()?,
             auth_token,
@@ -87,7 +94,7 @@ fn auth_json_for(token: Option<&str>) -> Result<String> {
     Ok(serde_json::json!({ "token": encrypted }).to_string())
 }
 
-const PROJECT_COLUMNS: &str = "id, project_id, name, runtime_endpoint, environment_id, auth_json, timeout_ms, max_result_bytes, max_concurrent, description, last_connected_at, last_info_json, created_at, updated_at";
+const PROJECT_COLUMNS: &str = "id, project_id, name, mode, attach_pid, vm_start_ms, runtime_endpoint, environment_id, auth_json, timeout_ms, max_result_bytes, max_concurrent, description, last_connected_at, last_info_json, created_at, updated_at";
 
 /// 列出全部 Java 调试项目（更新时间倒序）；`project_id` 过滤关联项目。
 pub async fn list_java_projects(
@@ -101,14 +108,14 @@ pub async fn list_java_projects(
             ))
             .bind(pid.to_string())
             .fetch_all(db)
-            .await?
+            .await.map_err(db_err)?
         }
         None => {
             sqlx::query_as(&format!(
                 "SELECT {PROJECT_COLUMNS} FROM java_projects ORDER BY updated_at DESC"
             ))
             .fetch_all(db)
-            .await?
+            .await.map_err(db_err)?
         }
     };
     rows.into_iter().map(JavaProjectRow::into_model).collect()
@@ -120,7 +127,8 @@ pub async fn get_java_project(db: &SqlitePool, id: Uuid) -> Result<JavaDebugProj
     ))
     .bind(id.to_string())
     .fetch_optional(db)
-    .await?;
+    .await
+    .map_err(db_err)?;
     row.map(JavaProjectRow::into_model)
         .transpose()?
         .ok_or_else(|| AppError::NotFound(format!("Java 调试项目（{id}）")))
@@ -135,11 +143,14 @@ pub async fn save_java_project(db: &SqlitePool, project: &JavaDebugProject) -> R
         .map(|v| v.to_string())
         .unwrap_or_default();
     let result = sqlx::query(
-        "INSERT INTO java_projects (id, project_id, name, runtime_endpoint, environment_id, auth_json, timeout_ms, max_result_bytes, max_concurrent, description, last_connected_at, last_info_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO java_projects (id, project_id, name, mode, attach_pid, vm_start_ms, runtime_endpoint, environment_id, auth_json, timeout_ms, max_result_bytes, max_concurrent, description, last_connected_at, last_info_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             project_id = excluded.project_id,
             name = excluded.name,
+            mode = excluded.mode,
+            attach_pid = excluded.attach_pid,
+            vm_start_ms = excluded.vm_start_ms,
             runtime_endpoint = excluded.runtime_endpoint,
             environment_id = excluded.environment_id,
             auth_json = excluded.auth_json,
@@ -153,6 +164,9 @@ pub async fn save_java_project(db: &SqlitePool, project: &JavaDebugProject) -> R
     .bind(project.id.to_string())
     .bind(project.project_id.map(|v| v.to_string()))
     .bind(project.name.trim())
+    .bind(project.mode.trim())
+    .bind(project.attach_pid)
+    .bind(project.vm_start_ms)
     .bind(project.runtime_endpoint.trim())
     .bind(project.environment_id.map(|v| v.to_string()))
     .bind(auth_json)
@@ -165,7 +179,7 @@ pub async fn save_java_project(db: &SqlitePool, project: &JavaDebugProject) -> R
     .bind(project.created_at.to_rfc3339())
     .bind(project.updated_at.to_rfc3339())
     .execute(db)
-    .await?;
+    .await.map_err(db_err)? ;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!(
             "Java 调试项目（{}）",
@@ -189,22 +203,112 @@ pub async fn touch_java_project_connected(
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(id.to_string())
     .execute(db)
-    .await?;
+    .await.map_err(db_err)? ;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("Java 调试项目（{id}）")));
     }
     Ok(())
 }
 
+/// 删除全部 Java 调试项目（插件卸载「不保留数据」路径专用；v1 Runtime
+/// 项目 + 加密凭据一并消失）。返回删除行数。
+pub async fn delete_all_java_projects(db: &SqlitePool) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM java_projects")
+        .execute(db)
+        .await
+        .map_err(db_err)?;
+    Ok(res.rows_affected())
+}
+
+/// 删除全部调用历史（同上口径）。返回删除行数。
+pub async fn delete_all_java_invocations(db: &SqlitePool) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM java_invocations")
+        .execute(db)
+        .await
+        .map_err(db_err)?;
+    Ok(res.rows_affected())
+}
+
 pub async fn delete_java_project(db: &SqlitePool, id: Uuid) -> Result<()> {
     let result = sqlx::query("DELETE FROM java_projects WHERE id = ?")
         .bind(id.to_string())
         .execute(db)
-        .await?;
+        .await
+        .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("Java 调试项目（{id}）")));
     }
     Ok(())
+}
+
+/// attach 模式项目查找：pid + vm_start_ms 精确匹配。
+pub async fn find_attach_project(
+    db: &SqlitePool,
+    pid: i64,
+    vm_start_ms: i64,
+) -> Result<Option<JavaDebugProject>> {
+    let row: Option<JavaProjectRow> = sqlx::query_as(&format!(
+        "SELECT {PROJECT_COLUMNS} FROM java_projects WHERE mode = 'attach' AND attach_pid = ? AND vm_start_ms = ?"
+    ))
+    .bind(pid)
+    .bind(vm_start_ms)
+    .fetch_optional(db)
+    .await.map_err(db_err)? ;
+    row.map(JavaProjectRow::into_model).transpose()
+}
+
+/// attach 模式项目查找（仅按 pid——重启识别用）。
+pub async fn find_attach_project_by_pid(
+    db: &SqlitePool,
+    pid: i64,
+) -> Result<Option<JavaDebugProject>> {
+    let row: Option<JavaProjectRow> = sqlx::query_as(&format!(
+        "SELECT {PROJECT_COLUMNS} FROM java_projects WHERE mode = 'attach' AND attach_pid = ? ORDER BY updated_at DESC LIMIT 1"
+    ))
+    .bind(pid)
+    .fetch_optional(db)
+    .await.map_err(db_err)? ;
+    row.map(JavaProjectRow::into_model).transpose()
+}
+
+/// attach 会话落库 / 更新（name = 进程展示名；runtime_endpoint 为 attach:// 占位）。
+/// 已有同 pid 行：更新 name / vm_start_ms（重启复用历史）；无行：新建。返回项目 id。
+pub async fn upsert_attach_project(
+    db: &SqlitePool,
+    name: &str,
+    pid: i64,
+    vm_start_ms: i64,
+) -> Result<Uuid> {
+    let existing = find_attach_project_by_pid(db, pid).await?;
+    if let Some(project) = existing {
+        sqlx::query(
+            "UPDATE java_projects SET name = ?, vm_start_ms = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(name.trim())
+        .bind(vm_start_ms)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(project.id.to_string())
+        .execute(db)
+        .await
+        .map_err(db_err)?;
+        return Ok(project.id);
+    }
+    let id = Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO java_projects (id, name, mode, attach_pid, vm_start_ms, runtime_endpoint, auth_json, timeout_ms, max_result_bytes, max_concurrent, description, created_at, updated_at)
+         VALUES (?, ?, 'attach', ?, ?, ?, '{}', 30000, 1048576, 4, '', ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(name.trim())
+    .bind(pid)
+    .bind(vm_start_ms)
+    .bind(format!("attach://{pid}"))
+    .bind(&now)
+    .bind(&now)
+    .execute(db)
+    .await.map_err(db_err)? ;
+    Ok(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +392,7 @@ pub async fn insert_java_invocation(db: &SqlitePool, record: &JavaInvocationReco
     .bind(record.finished_at.as_deref())
     .bind(record.created_at.to_rfc3339())
     .execute(db)
-    .await?;
+    .await.map_err(db_err)? ;
     prune_java_invocations(db, record.project_id, JAVA_INVOCATION_KEEP).await;
     Ok(())
 }
@@ -325,7 +429,7 @@ pub async fn list_java_invocations(
     .bind(project_id.to_string())
     .bind(limit)
     .fetch_all(db)
-    .await?;
+    .await.map_err(db_err)? ;
     rows.into_iter().map(InvocationRow::into_model).collect()
 }
 
@@ -336,7 +440,7 @@ pub async fn get_java_invocation(db: &SqlitePool, id: Uuid) -> Result<JavaInvoca
     )
     .bind(id.to_string())
     .fetch_optional(db)
-    .await?;
+    .await.map_err(db_err)? ;
     row.map(InvocationRow::into_model)
         .transpose()?
         .ok_or_else(|| AppError::NotFound(format!("调用历史（{id}）")))
@@ -346,7 +450,8 @@ pub async fn delete_java_invocation(db: &SqlitePool, id: Uuid) -> Result<()> {
     let result = sqlx::query("DELETE FROM java_invocations WHERE id = ?")
         .bind(id.to_string())
         .execute(db)
-        .await?;
+        .await
+        .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("调用历史（{id}）")));
     }
@@ -357,7 +462,8 @@ pub async fn clear_java_invocations(db: &SqlitePool, project_id: Uuid) -> Result
     sqlx::query("DELETE FROM java_invocations WHERE project_id = ?")
         .bind(project_id.to_string())
         .execute(db)
-        .await?;
+        .await
+        .map_err(db_err)?;
     Ok(())
 }
 
@@ -374,6 +480,9 @@ mod tests {
             id: Uuid::new_v4(),
             project_id: None,
             name: name.into(),
+            mode: "runtime".into(),
+            attach_pid: None,
+            vm_start_ms: None,
             runtime_endpoint: "http://127.0.0.1:9918".into(),
             environment_id: None,
             auth_token: Some("s3cret".into()),
@@ -434,6 +543,66 @@ mod tests {
         let got = get_java_project(&db, p.id).await.unwrap();
         assert!(got.last_connected_at.is_some());
         assert_eq!(got.last_info.unwrap()["app_name"], "demo");
+    }
+
+    #[tokio::test]
+    async fn attach_project_upsert_and_restart_reuse() {
+        let db = db().await;
+        // 首次 attach：新建行
+        let id = upsert_attach_project(&db, "com.example.PlainApp", 4242, 1_000)
+            .await
+            .unwrap();
+        let project = get_java_project(&db, id).await.unwrap();
+        assert_eq!(project.mode, "attach");
+        assert_eq!(project.attach_pid, Some(4242));
+        assert_eq!(project.vm_start_ms, Some(1_000));
+        assert_eq!(project.runtime_endpoint, "attach://4242");
+
+        // 落一条历史（复用既有链路）
+        let record = JavaInvocationRecord {
+            id: Uuid::new_v4(),
+            project_id: id,
+            class_name: "com.example.calculator.Calculator".into(),
+            method_id: "com.example.calculator.Calculator#add(long,long)".into(),
+            method_signature: "add(long, long)".into(),
+            arguments: serde_json::json!([2, 40]),
+            status: "success".into(),
+            result: Some(serde_json::json!(42)),
+            result_truncated: false,
+            exception: None,
+            duration_ms: Some(0.4),
+            started_at: None,
+            finished_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        insert_java_invocation(&db, &record).await.unwrap();
+        assert_eq!(list_java_invocations(&db, id, 10).await.unwrap().len(), 1);
+
+        // 同 pid + 同 vm_start：不新建
+        let id2 = upsert_attach_project(&db, "com.example.PlainApp", 4242, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(id, id2);
+
+        // 进程重启（vm_start 变化）：同一行更新 vm_start，历史保留
+        let id3 = upsert_attach_project(&db, "com.example.PlainApp（重启）", 4242, 2_000)
+            .await
+            .unwrap();
+        assert_eq!(id, id3);
+        let project = get_java_project(&db, id).await.unwrap();
+        assert_eq!(project.vm_start_ms, Some(2_000));
+        assert_eq!(project.name, "com.example.PlainApp（重启）");
+        assert_eq!(list_java_invocations(&db, id, 10).await.unwrap().len(), 1);
+
+        // find_attach_project：精确 vm_start 命中 / 旧值不命中
+        assert!(find_attach_project(&db, 4242, 2_000)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(find_attach_project(&db, 4242, 1_000)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -194,9 +194,38 @@ Miyo 核心插件的默认权限：允许前端调用全部 miyo 命令
 - `allow-plugin-clear-logs`
 - `allow-plugin-record-log`
 - `allow-plugin-data-get`
+- `allow-plugin-dir-get`
 - `allow-plugin-data-set`
 - `allow-plugin-data-delete`
 - `allow-plugin-data-keys`
+- `allow-plugin-session-create`
+- `allow-plugin-read-asset`
+- `allow-plugin-sidecar-start`
+- `allow-plugin-sidecar-stop`
+- `allow-plugin-sidecar-status`
+- `allow-plugin-sidecar-request`
+- `allow-plugin-update-from-path`
+- `allow-plugin-rollback`
+- `allow-plugin-market-index`
+- `allow-plugin-versions`
+- `allow-plugin-inspect-from-url`
+- `allow-plugin-install-from-cached`
+- `allow-java-discover-processes`
+- `allow-java-probe-pid`
+- `allow-java-attach-process`
+- `allow-java-detach-process`
+- `allow-java-unload-agent`
+- `allow-java-attach-sessions`
+- `allow-java-agent-status`
+- `allow-java-agent-spring-status`
+- `allow-java-agent-classes`
+- `allow-java-agent-class-detail`
+- `allow-java-agent-methods`
+- `allow-java-agent-beans`
+- `allow-java-agent-invoke`
+- `allow-java-agent-cancel`
+- `allow-java-component-status`
+- `allow-java-component-download`
 - `allow-list-java-projects`
 - `allow-save-java-project`
 - `allow-delete-java-project`
@@ -2512,6 +2541,266 @@ Denies the import_environment command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-java-agent-beans`
+
+</td>
+<td>
+
+Enables the java_agent_beans command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-beans`
+
+</td>
+<td>
+
+Denies the java_agent_beans command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-cancel`
+
+</td>
+<td>
+
+Enables the java_agent_cancel command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-cancel`
+
+</td>
+<td>
+
+Denies the java_agent_cancel command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-class-detail`
+
+</td>
+<td>
+
+Enables the java_agent_class_detail command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-class-detail`
+
+</td>
+<td>
+
+Denies the java_agent_class_detail command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-classes`
+
+</td>
+<td>
+
+Enables the java_agent_classes command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-classes`
+
+</td>
+<td>
+
+Denies the java_agent_classes command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-invoke`
+
+</td>
+<td>
+
+Enables the java_agent_invoke command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-invoke`
+
+</td>
+<td>
+
+Denies the java_agent_invoke command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-methods`
+
+</td>
+<td>
+
+Enables the java_agent_methods command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-methods`
+
+</td>
+<td>
+
+Denies the java_agent_methods command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-spring-status`
+
+</td>
+<td>
+
+Enables the java_agent_spring_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-spring-status`
+
+</td>
+<td>
+
+Denies the java_agent_spring_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-agent-status`
+
+</td>
+<td>
+
+Enables the java_agent_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-agent-status`
+
+</td>
+<td>
+
+Denies the java_agent_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-attach-process`
+
+</td>
+<td>
+
+Enables the java_attach_process command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-attach-process`
+
+</td>
+<td>
+
+Denies the java_attach_process command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-attach-sessions`
+
+</td>
+<td>
+
+Enables the java_attach_sessions command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-attach-sessions`
+
+</td>
+<td>
+
+Denies the java_attach_sessions command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-java-cancel-invocation`
 
 </td>
@@ -2538,6 +2827,84 @@ Denies the java_cancel_invocation command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-java-component-download`
+
+</td>
+<td>
+
+Enables the java_component_download command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-component-download`
+
+</td>
+<td>
+
+Denies the java_component_download command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-component-status`
+
+</td>
+<td>
+
+Enables the java_component_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-component-status`
+
+</td>
+<td>
+
+Denies the java_component_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-detach-process`
+
+</td>
+<td>
+
+Enables the java_detach_process command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-detach-process`
+
+</td>
+<td>
+
+Denies the java_detach_process command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-java-discover-local`
 
 </td>
@@ -2557,6 +2924,32 @@ Enables the java_discover_local command without any pre-configured scope.
 <td>
 
 Denies the java_discover_local command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-discover-processes`
+
+</td>
+<td>
+
+Enables the java_discover_processes command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-discover-processes`
+
+</td>
+<td>
+
+Denies the java_discover_processes command without any pre-configured scope.
 
 </td>
 </tr>
@@ -2668,6 +3061,32 @@ Denies the java_probe_endpoint command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-java-probe-pid`
+
+</td>
+<td>
+
+Enables the java_probe_pid command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-probe-pid`
+
+</td>
+<td>
+
+Denies the java_probe_pid command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-java-test-connection`
 
 </td>
@@ -2687,6 +3106,32 @@ Enables the java_test_connection command without any pre-configured scope.
 <td>
 
 Denies the java_test_connection command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-java-unload-agent`
+
+</td>
+<td>
+
+Enables the java_unload_agent command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-java-unload-agent`
+
+</td>
+<td>
+
+Denies the java_unload_agent command without any pre-configured scope.
 
 </td>
 </tr>
@@ -3734,6 +4179,32 @@ Denies the plugin_data_set command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-plugin-dir-get`
+
+</td>
+<td>
+
+Enables the plugin_dir_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-dir-get`
+
+</td>
+<td>
+
+Denies the plugin_dir_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-plugin-get`
 
 </td>
@@ -3753,6 +4224,32 @@ Enables the plugin_get command without any pre-configured scope.
 <td>
 
 Denies the plugin_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-inspect-from-url`
+
+</td>
+<td>
+
+Enables the plugin_inspect_from_url command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-inspect-from-url`
+
+</td>
+<td>
+
+Denies the plugin_inspect_from_url command without any pre-configured scope.
 
 </td>
 </tr>
@@ -3805,6 +4302,32 @@ Enables the plugin_install_builtin command without any pre-configured scope.
 <td>
 
 Denies the plugin_install_builtin command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-install-from-cached`
+
+</td>
+<td>
+
+Enables the plugin_install_from_cached command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-install-from-cached`
+
+</td>
+<td>
+
+Denies the plugin_install_from_cached command without any pre-configured scope.
 
 </td>
 </tr>
@@ -3916,6 +4439,58 @@ Denies the plugin_logs command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-plugin-market-index`
+
+</td>
+<td>
+
+Enables the plugin_market_index command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-market-index`
+
+</td>
+<td>
+
+Denies the plugin_market_index command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-read-asset`
+
+</td>
+<td>
+
+Enables the plugin_read_asset command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-read-asset`
+
+</td>
+<td>
+
+Denies the plugin_read_asset command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-plugin-record-log`
 
 </td>
@@ -3961,6 +4536,58 @@ Enables the plugin_report_error command without any pre-configured scope.
 <td>
 
 Denies the plugin_report_error command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-rollback`
+
+</td>
+<td>
+
+Enables the plugin_rollback command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-rollback`
+
+</td>
+<td>
+
+Denies the plugin_rollback command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-session-create`
+
+</td>
+<td>
+
+Enables the plugin_session_create command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-session-create`
+
+</td>
+<td>
+
+Denies the plugin_session_create command without any pre-configured scope.
 
 </td>
 </tr>
@@ -4020,6 +4647,110 @@ Denies the plugin_set_permissions command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-plugin-sidecar-request`
+
+</td>
+<td>
+
+Enables the plugin_sidecar_request command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-sidecar-request`
+
+</td>
+<td>
+
+Denies the plugin_sidecar_request command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-sidecar-start`
+
+</td>
+<td>
+
+Enables the plugin_sidecar_start command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-sidecar-start`
+
+</td>
+<td>
+
+Denies the plugin_sidecar_start command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-sidecar-status`
+
+</td>
+<td>
+
+Enables the plugin_sidecar_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-sidecar-status`
+
+</td>
+<td>
+
+Denies the plugin_sidecar_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-sidecar-stop`
+
+</td>
+<td>
+
+Enables the plugin_sidecar_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-sidecar-stop`
+
+</td>
+<td>
+
+Denies the plugin_sidecar_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-plugin-uninstall`
 
 </td>
@@ -4072,6 +4803,32 @@ Denies the plugin_update_builtin command without any pre-configured scope.
 <tr>
 <td>
 
+`miyo-tauri:allow-plugin-update-from-path`
+
+</td>
+<td>
+
+Enables the plugin_update_from_path command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-update-from-path`
+
+</td>
+<td>
+
+Denies the plugin_update_from_path command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `miyo-tauri:allow-plugin-verify-integrity`
 
 </td>
@@ -4091,6 +4848,32 @@ Enables the plugin_verify_integrity command without any pre-configured scope.
 <td>
 
 Denies the plugin_verify_integrity command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:allow-plugin-versions`
+
+</td>
+<td>
+
+Enables the plugin_versions command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`miyo-tauri:deny-plugin-versions`
+
+</td>
+<td>
+
+Denies the plugin_versions command without any pre-configured scope.
 
 </td>
 </tr>

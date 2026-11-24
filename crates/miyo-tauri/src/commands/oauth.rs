@@ -5,7 +5,7 @@ use tauri::State;
 use miyo_core::model::{AuthSpec, OAuth2Token};
 use miyo_oauth::client::{self, OAuth2Error};
 
-use crate::error::{CommandError, CommandErrorCode, CommandResult};
+use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
 
 /// 发起完整授权码流程：本地回调服务器 + 打开系统浏览器 + 换 token。
@@ -41,9 +41,8 @@ pub async fn oauth_fetch_token(
 
 impl From<OAuth2Error> for CommandError {
     fn from(err: OAuth2Error) -> Self {
-        CommandError {
-            code: CommandErrorCode::Oauth2,
-            message: err.to_string(),
-        }
+        // 统一经 AppError 单源映射（impl 定义在 miyo-oauth crate——孤儿规则；
+        // 此前旁路直连 CommandError 是错误体系的双通道漂移点）
+        CommandError::from(miyo_core::AppError::from(err))
     }
 }

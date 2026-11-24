@@ -8,7 +8,8 @@
  * - 查找：顶部弹出搜索框，高亮匹配 + 上一个/下一个导航（Enter / Shift+Enter / Esc）；
  * - 主体：JSON → 可折叠树形查看器（行号 + VS Code 深色语法着色）；文本 → 行号代码视图；HTML → 沙箱预览。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
+import { pushEscHandler } from '@/utils/escStack'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { useToast } from '@/composables/useToast'
 import { countOccurrences, useFindInText } from '@/composables/useFindInText'
@@ -554,13 +555,8 @@ async function copyLine(text: string): Promise<void> {
   else toast.error(t('response.copyFail'))
 }
 
-/** ⌘F / Ctrl+F 打开查找（输入框内不拦截）；Esc 退出全屏。 */
+/** ⌘F / Ctrl+F 打开查找（输入框内不拦截）；Esc 退出全屏走 escStack（见下）。 */
 function onWindowKeydown(e: KeyboardEvent): void {
-  if (fullscreen.value && e.key === 'Escape') {
-    e.preventDefault()
-    fullscreen.value = false
-    return
-  }
   if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f') return
   if (activeTab.value !== 'body' || !hasBody.value) return
   const target = e.target as HTMLElement | null
@@ -626,6 +622,21 @@ const wrapToggleVisible = computed(
 // ---------- 全屏（响应面板 fixed 覆盖编辑器；祖先链无 transform，fixed 可靠） ----------
 const fullscreen = ref(false)
 
+/**
+ * 全屏 Esc 接 escStack：抽屉/弹层内开全屏时，Esc 先退全屏不关宿主弹层
+ * （原先 window 直听会双轨穿透——规范见 docs/NAVIGATION.md 弹层层级语义）。
+ */
+let offFullscreenEsc: (() => void) | null = null
+watch(fullscreen, (on) => {
+  offFullscreenEsc?.()
+  offFullscreenEsc = on
+    ? pushEscHandler(() => {
+      fullscreen.value = false
+    })
+    : null
+})
+onBeforeUnmount(() => offFullscreenEsc?.())
+
 function toggleFullscreen(): void {
   fullscreen.value = !fullscreen.value
 }
@@ -665,6 +676,9 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- 全屏时 Teleport 到 body：脱离工作区布局的层叠压制（top-bar / 页签行 /
+       编辑器栏会盖住原位 fixed 面板，v0.0.61 用户实测）；非全屏原位渲染。 -->
+  <Teleport to="body" :disabled="!fullscreen">
   <div class="rp" :class="[`tone-${tone}`, { collapsed, fullscreen }]">
     <!-- 第一层：执行信息（状态 / 耗时 / 大小 / 类型）+ 面板级操作 -->
     <div class="rp-toolbar">
@@ -684,24 +698,39 @@ onUnmounted(() => {
         <span v-if="response.truncated" class="rp-truncated" :title="t('response.truncatedHint')">{{ t('response.truncated') }}</span>
       </div>
       <span class="rp-toolbar-spacer"></span>
-      <Tooltip :content="collapsed ? t('response.expand') : t('response.collapse')" placement="bottom">
-        <IconButton
-          class="rp-icon-btn"
-          :name="collapsed ? 'chevron-down' : 'chevron-up'"
-          :size="13"
-          :label="collapsed ? t('response.expand') : t('response.collapse')"
-          @click="toggleCollapsed"
-        />
-      </Tooltip>
-      <!-- 面板高度拖拽把手（视觉 affordance）：按下向宿主上报，拖拽热区仍在整条分割带 -->
-      <span
-        class="rp-drag-grip"
-        aria-hidden="true"
-        :title="t('editor.splitterHint')"
-        @mousedown="emit('dragStart', $event as MouseEvent)"
-      >
-        <Icon name="chevrons-up-down" :size="14" />
-      </span>
+      <!-- 全屏态：退出全屏按钮常驻（原入口只在「更多」菜单里，不可发现——用户实测）；
+           Esc 也可退出。复用 jsonEditor.exitFullscreen 文案（含 Esc 提示）。 -->
+      <template v-if="fullscreen">
+        <Tooltip :content="t('jsonEditor.exitFullscreen')" placement="bottom">
+          <IconButton
+            class="rp-icon-btn"
+            name="minimize-2"
+            :size="13"
+            :label="t('jsonEditor.exitFullscreen')"
+            @click="toggleFullscreen"
+          />
+        </Tooltip>
+      </template>
+      <template v-else>
+        <Tooltip :content="collapsed ? t('response.expand') : t('response.collapse')" placement="bottom">
+          <IconButton
+            class="rp-icon-btn"
+            :name="collapsed ? 'chevron-down' : 'chevron-up'"
+            :size="13"
+            :label="collapsed ? t('response.expand') : t('response.collapse')"
+            @click="toggleCollapsed"
+          />
+        </Tooltip>
+        <!-- 面板高度拖拽把手（视觉 affordance）：按下向宿主上报，拖拽热区仍在整条分割带 -->
+        <span
+          class="rp-drag-grip"
+          aria-hidden="true"
+          :title="t('editor.splitterHint')"
+          @mousedown="emit('dragStart', $event as MouseEvent)"
+        >
+          <Icon name="chevrons-up-down" :size="14" />
+        </span>
+      </template>
     </div>
 
     <!-- 第二层：内容页签 + 视图模式 + 行内操作（低频操作收进「更多」菜单） -->
@@ -949,6 +978,7 @@ onUnmounted(() => {
 
     <Menu ref="moreMenu" @select="onMoreMenuSelect" />
   </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -972,13 +1002,19 @@ onUnmounted(() => {
   height: auto;
 }
 
-/* 全屏：fixed 覆盖编辑器（祖先链无 transform，fixed 可靠）；Esc / 菜单退出 */
+/* 全屏：Teleport 到 body 后 fixed 全出血覆盖视口（原位渲染会被工作区 chrome
+ * 的层叠上下文压住，v0.0.61 用户实测）；Esc / 菜单退出。
+ * inset 必须为 0：此前 14px 四周留缝，底层 chrome 从缝里渗出（用户实测截图）；
+ * macOS 主窗交通灯左缘预留见 style.css 全局规则。
+ * 层级取 --z-overlay：覆盖工作区 chrome，低于 Toast（阶梯见 style.css）。 */
 .rp.fullscreen {
   position: fixed;
-  inset: 14px;
-  z-index: 80;
+  inset: 0;
+  z-index: var(--z-overlay);
   height: auto;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 /* ---- 两层工具栏 ----

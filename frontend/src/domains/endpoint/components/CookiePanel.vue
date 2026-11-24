@@ -15,6 +15,7 @@ import { useLocaleStore } from '@/stores/locale'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
+import SearchInput from '@/components/ui/SearchInput.vue'
 import Popconfirm from '@/components/ui/Popconfirm.vue'
 import type { CookieEntry } from '@/types/miyoApi.d'
 import { errorText } from '@/utils/errorText'
@@ -106,17 +107,12 @@ function displayValue(v: string): string {
 <template>
   <div class="cookie-panel">
     <div class="cp-head">
-      <div class="cp-search">
-        <Icon name="search" :size="13" class="cp-search-icon" />
-        <input
-          v-model="filter"
-          class="cp-input"
-          type="text"
-          :placeholder="t('cookie.filterPh')"
-          spellcheck="false"
-          @input="onFilterInput"
-        />
-      </div>
+      <SearchInput
+        v-model="filter"
+        class="cp-search"
+        :placeholder="t('cookie.filterPh')"
+        @update:model-value="onFilterInput"
+      />
       <span class="cp-count">{{ t('cookie.count', { n: cookies.length }) }}</span>
       <button
         class="cp-reload"
@@ -202,23 +198,7 @@ function displayValue(v: string): string {
 }
 .cp-search {
   flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
   min-width: 0;
-}
-.cp-search-icon {
-  color: var(--text-3);
-  flex-shrink: 0;
-}
-.cp-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text-1);
-  font-size: 12px;
 }
 .cp-count {
   font-size: var(--fs-xxs);
@@ -232,7 +212,7 @@ function displayValue(v: string): string {
   color: var(--text-2);
   cursor: pointer;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 .cp-reload:hover {
   background: var(--bg-hover);
@@ -247,7 +227,7 @@ function displayValue(v: string): string {
 }
 .cp-hint {
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 .cp-list {
@@ -270,7 +250,7 @@ function displayValue(v: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   color: var(--text-1);
 }
@@ -314,10 +294,10 @@ function displayValue(v: string): string {
   align-items: center;
 }
 .cp-flag {
-  font-size: 9.5px;
+  font-size: var(--fs-2xxs);
   font-weight: 700;
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--info-tint, var(--bg-hover));
   color: var(--info);
 }

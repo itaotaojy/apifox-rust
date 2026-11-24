@@ -164,7 +164,7 @@ const {
  * watch 源带上 draft id：restore 同步打开标签页后，draft 已指向恢复的接口；
  * immediate 兜底「restore 时编辑器尚未挂载」的时序（如切项目后直接重放）。 */
 watch(
-  () => [store.autoSendEndpointId, draft.value?.id] as const,
+  [() => store.autoSendEndpointId, () => draft.value?.id],
   ([pendingId, currentId]) => {
     if (!pendingId || pendingId !== currentId) return
     store.autoSendEndpointId = null
@@ -216,6 +216,19 @@ const {
   hasResponse,
   editorEl,
   configBoxEl,
+})
+
+/**
+ * 响应色 tone（与 ResponsePanel 同口径：<300 ok / <400 warn / 其余 err）。
+ * 合并卡内不再画第二层框（收口到分割条单线），失败态把这条接缝线染 danger——
+ * 错误提示仍留在「唯一的一条线」上，不新增视觉元素。
+ */
+const responseTone = computed(() => {
+  const s = response.value?.status
+  if (s == null) return null
+  if (s < 300) return 'ok'
+  if (s < 400) return 'warn'
+  return 'err'
 })
 
 /** 切接口自动收起请求设置弹窗（原与 splitter 的 chrome 归属同 watch，拆分后各自监听）。 */
@@ -345,10 +358,17 @@ watch(
 
 /**
  * 手动切换 Method：POST 系 → Body（空体初始化 `{}` + application/json，有体则保持）；其余 → Params。
- * 仅在【同一接口内】method 变化时应用：打开 / 切换接口时 draft 从 null → 有值
+ * 仅在【同一接口内】method 真变化时应用：打开 / 切换接口时 draft 从 null → 有值
  * 或 id 变化，method 必然「变」一次——那是一次载入而非用户编辑，回写
  * applyMethodDefaults 的副作用（body 初始化 / Content-Type / active_tab）
  * 会让刚打开的接口立刻被判定为「有改动」（isDirty 误报）。
+ *
+ * 源必须用「两个 getter 的数组」而不是返回数组的单个 getter：后者每次求值都新建
+ * 数组，Vue 的 hasChanged 按引用比较 → **草稿对象被替换**（保存成功时 store 把
+ * draft 换成后端回执、打开接口）也会触发回调，同 id 落到 applyMethodDefaults 上，
+ * 刚保存的接口立刻又亮小圆点、POST 空体还会被塞进 JSON body（用户实测：
+ * 「导入 curl 后保存了，左边还有未保存的小点」）。数组源逐元素比较，只有
+ * id / method 真变化才回调；下面再加一道 method 未变的兜底。
  *
  * 往返还原：首次切换时记录切换前的 request 快照；切回记录的原方法时
  * 整体还原快照——否则 applyMethodDefaults 的副作用不可逆，用户
@@ -357,13 +377,15 @@ watch(
 let methodRevert: { from: string; snapshot: RequestSpec } | null = null
 
 watch(
-  () => [draft.value?.id, draft.value?.method] as const,
+  [() => draft.value?.id, () => draft.value?.method],
   ([id, m], prev) => {
     if (!m || !draft.value) return
     if (id !== prev?.[0]) {
       methodRevert = null
       return
     }
+    // 同 id 但 method 未变：草稿对象被替换（保存 / 刷新回写），不是用户改方法
+    if (prev && m === prev[1]) return
     const d = draft.value
     if (methodRevert && m === methodRevert.from) {
       // 切回上次的方法：整体还原切换前的 request（撤销默认初始化副作用）
@@ -736,9 +758,41 @@ const SUB_NAV = computed<{ key: 'debug' | 'design' | 'docs' | 'cases' | 'mock'; 
  */
 const lastViewByEndpoint = new Map<string, 'debug' | 'design' | 'docs' | 'cases' | 'mock'>()
 
+/** 二级页记忆落盘（LRU 200 条，与分割态分桶同范式）：刷新后仍能回到上次停留页。 */
+const LAST_VIEW_KEY = 'miyo.endpoint-last-view'
+const LAST_VIEW_MAX = 200
+
+function persistLastViews(): void {
+  try {
+    let entries = [...lastViewByEndpoint.entries()]
+    if (entries.length > LAST_VIEW_MAX) entries = entries.slice(-LAST_VIEW_MAX)
+    localStorage.setItem(LAST_VIEW_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch {
+    // 写失败静默：恢复缺失只是回调试页
+  }
+}
+
+function restoreLastViews(): void {
+  try {
+    const raw = localStorage.getItem(LAST_VIEW_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const VALID = new Set(['debug', 'design', 'docs', 'cases', 'mock'])
+    for (const [id, view] of Object.entries(parsed)) {
+      if (typeof view === 'string' && VALID.has(view)) {
+        lastViewByEndpoint.set(id, view as 'debug' | 'design' | 'docs' | 'cases' | 'mock')
+      }
+    }
+  } catch {
+    // 解析失败静默
+  }
+}
+restoreLastViews()
+
 function rememberView(endpointId: string | null | undefined, view: string): void {
   if (!endpointId) return
   lastViewByEndpoint.set(endpointId, view as 'debug' | 'design' | 'docs' | 'cases' | 'mock')
+  persistLastViews()
 }
 
 /** 打开接口：恢复该接口上次停留的二级页（从未切过 → 调试页）。 */
@@ -1205,7 +1259,7 @@ onUnmounted(() => {
            跟随——看到底线即可拖。 -->
       <div
         class="rp-splitter"
-        :class="{ dragging: splitterDragging }"
+        :class="{ dragging: splitterDragging, 'tone-err': responseTone === 'err' }"
         role="separator"
         tabindex="0"
         aria-orientation="horizontal"
@@ -1404,8 +1458,9 @@ onUnmounted(() => {
 .editor {
   display: flex;
   flex-direction: column;
-  /* 卡片间距：请求区面板与响应区面板之间 14px（gap-3.5） */
-  gap: 14px;
+  /* 卡片间距 12px：与容器 padding 对齐同一节奏（此前 14px 与 8/12 形成
+     三种间距碎值，横向节奏不齐） */
+  gap: 12px;
   padding: 12px;
   overflow-y: auto;
   height: 100%;
@@ -1880,7 +1935,7 @@ onUnmounted(() => {
   flex-shrink: 0;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
+  border-top-color: var(--text-on-accent);
   animation: btn-spin 0.7s linear infinite;
 }
 @keyframes btn-spin {
@@ -1915,9 +1970,8 @@ onUnmounted(() => {
   top: 0;
   bottom: 0;
   width: 40%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  box-shadow: 0 0 8px var(--accent);
   animation: req-slide 0.9s ease-in-out infinite;
 }
 @keyframes req-slide {
@@ -1995,13 +2049,11 @@ onUnmounted(() => {
 }
 @keyframes resp-flash {
   0% {
-    box-shadow:
-      0 0 0 2px var(--accent),
-      0 0 28px var(--accent-tint);
     background: var(--accent-tint);
   }
-  60% { box-shadow: 0 0 0 1px var(--accent); }
-  100% { box-shadow: 0 0 0 0 transparent; background: transparent; }
+  100% {
+    background: transparent;
+  }
 }
 @keyframes status-pop {
   0% { transform: scale(0.6); }
@@ -2115,7 +2167,9 @@ onUnmounted(() => {
 .req-resp-stack.no-response {
   flex: 1 1 auto;
 }
-/* 核心输入区卡片：比全局背景浅一档，微阴影 + 圆角增强悬浮感 */
+/* 核心输入区卡片：Single Border Architecture——外框 / 圆角 / 阴影由
+ * .req-resp-stack 统一提供，本卡不再画框（此前自带完整边框形成卡中卡，
+ * 接缝处与容器边、分割线叠出三条平行线，即用户指出的「线条问题」）。 */
 .config-box {
   display: flex;
   flex-direction: column;
@@ -2124,9 +2178,6 @@ onUnmounted(() => {
   min-height: 0;
   overflow-y: auto;
   background: var(--bg-card);
-  border: 1px solid var(--border-panel);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-panel);
   padding: 10px 12px;
 }
 
@@ -2202,10 +2253,10 @@ onUnmounted(() => {
   background: var(--accent);
 }
 
-/* 请求设置 Popover（Teleport 到 body，fixed 定位） */
+/* 请求设置 Popover（Teleport 到 body，fixed 定位；层级走 z 阶梯 popover 档） */
 .rs-pop {
   position: fixed;
-  z-index: 90;
+  z-index: var(--z-popover);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2235,7 +2286,7 @@ onUnmounted(() => {
   display: inline-grid;
   place-content: center;
   border: 1px solid var(--border-editor);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   /* 井底走 --check-bg（深 26% 黑 / 浅 5% 黑） */
   background: var(--check-bg);
   cursor: pointer;
@@ -2249,7 +2300,7 @@ onUnmounted(() => {
   height: 8px;
   transform: scale(0);
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
-  background: #fff;
+  background: var(--text-on-accent);
   transition: transform 120ms var(--ease);
 }
 .rs-check input[type='checkbox']:checked {
@@ -2414,7 +2465,7 @@ onUnmounted(() => {
   width: 26px;
   height: 4px;
   transform: translate(-50%, -50%);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--text-3);
   opacity: 0.32;
   transition: opacity 0.15s ease;
@@ -2555,11 +2606,33 @@ onUnmounted(() => {
 }
 
 /* ---- 响应容器：flex:1 填满分割条以下所有空间 ---- */
+/* ---- 接缝线失败态：响应 tone err 时分割线染 danger ----
+ * 原 .rp 的红框在合并卡内已随边框收口移除，错误态提示收敛到这条
+ * 唯一的接缝线上（hover/拖拽的 accent 高亮 ::before 优先级更高，仍正常）。 */
+.rp-splitter.tone-err {
+  background: var(--danger-border);
+}
+
+.rp-splitter:hover.tone-err::before,
+.rp-splitter.dragging.tone-err::before {
+  background: var(--danger);
+}
+
 .response-zone {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+}
+
+/* Single Border 收口（宿主侧）：ResponsePanel 自带边框/圆角/阴影是独立宿主
+ * （测试用例抽屉 / 场景报告 / GraphQL 等 6 处）的形态，合并卡内由
+ * .req-resp-stack 统一外框——此处剥掉内层框，接缝只剩分割条一条线。
+ * 全屏态 Teleport 到 body，不在本作用域内，独立形态的框/影自动保留。 */
+.response-zone :deep(.rp) {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .response-empty {

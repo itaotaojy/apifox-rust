@@ -2,9 +2,9 @@
 /**
  * ThemeAppearance：设置 → 通用设置 → 主题外观。
  *
- * 结构：模式分段（跟随系统 / 固定主题）→ 主题预览卡网格（6 内置 + 自定义入口，
+ * 结构：模式分段（跟随系统 / 固定主题）→ 主题预览卡网格（8 内置 + 自定义入口，
  * radiogroup + 方向键漫游）→ 自定义主题编辑器（选中「自定义」时展开：基调 /
- * 五色 / 背景四形态 / 卡片透明度 / 圆角 / 字号）→ 导入 / 导出 / 恢复默认主题。
+ * 五色 / 背景四形态 / 卡片透明度 / 圆角 / 字号 / 密度 / 字体）→ 导入 / 导出 / 恢复默认主题。
  *
  * 所有改动经 theme store 立即写 DOM（实时预览，免刷新）；背景图上传走
  * theme/backgroundImage.ts 压缩管线，错误经稳定 code 映射 i18n 文案。
@@ -17,8 +17,9 @@ import { useLocaleStore } from '@/stores/locale'
 import { useToast } from '@/composables/useToast'
 import { BUILTIN_THEMES } from '@/theme/presets'
 import { processImageFile, type ImageProcessErrorCode } from '@/theme/backgroundImage'
-import type { BackgroundType, CustomColors, ImageBackground, ThemeId } from '@/theme/types'
+import type { BackgroundType, CustomColors, ImageBackground, ThemeId, ThemeStyle } from '@/theme/types'
 import ThemeCard from './ThemeCard.vue'
+import StyleCard from './StyleCard.vue'
 
 const theme = useThemeStore()
 const locale = useLocaleStore()
@@ -40,6 +41,8 @@ const THEME_NAME_KEYS: Record<Exclude<ThemeId, 'custom'>, string> = {
   light: 'settings.themeNameLight',
   dark: 'settings.themeNameDark',
   ocean: 'settings.themeNameOcean',
+  'ocean-light': 'settings.themeNameOceanLight',
+  'forest-dark': 'settings.themeNameForestDark',
   forest: 'settings.themeNameForest',
   sand: 'settings.themeNameSand',
   lavender: 'settings.themeNameLavender',
@@ -84,9 +87,37 @@ function selectTheme(id: ThemeId): void {
   theme.setThemeId(id)
 }
 
+/* ---- 视觉风格（与颜色主题正交；三卡实时预览 = 当前色板 × 该风格） ---- */
+const STYLE_ITEMS: { id: ThemeStyle; nameKey: string; descKey: string }[] = [
+  { id: 'studio', nameKey: 'settings.styleNameStudio', descKey: 'settings.styleDescStudio' },
+  { id: 'minimal', nameKey: 'settings.styleNameMinimal', descKey: 'settings.styleDescMinimal' },
+  { id: 'soft', nameKey: 'settings.styleNameSoft', descKey: 'settings.styleDescSoft' },
+]
+
+/** 风格网格 roving tabindex（与主题网格同一交互模型）。 */
+const STYLE_KEYS = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
+function onStyleKeydown(e: KeyboardEvent): void {
+  if (!STYLE_KEYS.includes(e.key)) return
+  const root = e.currentTarget as HTMLElement
+  const cards = [...root.querySelectorAll<HTMLButtonElement>('button[role="radio"]')]
+  if (!cards.length) return
+  e.preventDefault()
+  let idx = cards.indexOf(document.activeElement as HTMLButtonElement)
+  if (idx === -1) idx = 0
+  if (e.key === 'ArrowRight') idx = (idx + 1) % cards.length
+  else if (e.key === 'ArrowLeft') idx = (idx - 1 + cards.length) % cards.length
+  else if (e.key === 'Home') idx = 0
+  else idx = cards.length - 1
+  cards[idx]?.focus()
+}
+
+function selectStyle(id: ThemeStyle): void {
+  theme.setStyle(id)
+}
+
 /** 网格 roving tabindex：←/→/↑/↓/Home/End 移动焦点（选中由点击/Enter 完成）。 */
 const GRID_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']
-const GRID_COLS = 4
+const GRID_COLS = 3
 function onGridKeydown(e: KeyboardEvent): void {
   if (!GRID_KEYS.includes(e.key)) return
   const root = e.currentTarget as HTMLElement
@@ -268,6 +299,23 @@ const fontScalePct = computed({
   set: (v: number) => theme.updateCustom({ fontScale: v / 100 }),
 })
 
+/* ---- 密度 / 字体（数组随语言刷新，必须包 computed） ---- */
+const densityOptions = computed(() => [
+  { value: 'compact', label: t('settings.themeDensityCompact') },
+  { value: 'default', label: t('settings.themeDensityDefault') },
+  { value: 'cozy', label: t('settings.themeDensityCozy') },
+])
+const fontOptions = computed(() => [
+  { value: 'default', label: t('settings.themeFontDefault') },
+  { value: 'system', label: t('settings.themeFontSystem') },
+])
+const setDensity = (v: string): void => {
+  theme.updateCustom({ density: v === 'compact' ? 'compact' : v === 'cozy' ? 'cozy' : 'default' })
+}
+const setFont = (v: string): void => {
+  theme.updateCustom({ font: v === 'system' ? 'system' : 'default' })
+}
+
 /* ---- 导入 / 导出 / 恢复默认 ---- */
 function exportTheme(): void {
   const blob = new Blob([theme.exportConfig()], { type: 'application/json' })
@@ -324,9 +372,9 @@ function targetNumber(e: Event): number {
     </div>
     <p v-if="systemHint" class="mt-2 text-xs text-ink3 num">{{ systemHint }}</p>
 
-    <!-- 主题预览卡网格（radiogroup + 方向键漫游） -->
+    <!-- 主题预览卡网格（radiogroup + 方向键漫游；8 内置 + 自定义 = 9 卡，3 列 × 3 行） -->
     <div
-      class="mt-4 grid grid-cols-4 gap-2"
+      class="mt-4 grid grid-cols-3 gap-2"
       role="radiogroup"
       :aria-label="t('settings.theme')"
       @keydown="onGridKeydown"
@@ -340,6 +388,32 @@ function targetNumber(e: Event): number {
         :selected="theme.themeId === item.id"
         :tabbable="theme.themeId === item.id || item.id === gridItems[0].id"
         @select="selectTheme(item.id)"
+      />
+    </div>
+
+    <!-- 视觉风格（与颜色主题正交的第二维度；预览卡用真实组件 token 渲染迷你界面，
+         即「当前色板 × 该风格」的组合实时预览） -->
+    <div class="mt-4 flex items-center justify-between gap-4">
+      <div class="min-w-0">
+        <div class="text-sm font-medium text-ink1">{{ t('settings.style') }}</div>
+        <p class="mt-0.5 text-xs text-ink2">{{ t('settings.styleDesc') }}</p>
+      </div>
+    </div>
+    <div
+      class="mt-2 grid grid-cols-3 gap-2"
+      role="radiogroup"
+      :aria-label="t('settings.style')"
+      @keydown="onStyleKeydown"
+    >
+      <StyleCard
+        v-for="item in STYLE_ITEMS"
+        :key="item.id"
+        :style-id="item.id"
+        :label="t(item.nameKey)"
+        :description="t(item.descKey)"
+        :selected="theme.style === item.id"
+        :tabbable="theme.style === item.id || item.id === 'studio'"
+        @select="selectStyle(item.id)"
       />
     </div>
 
@@ -555,6 +629,14 @@ function targetNumber(e: Event): number {
           />
           <span class="ce-val num">{{ fontScalePct }}%</span>
         </div>
+      </div>
+      <div class="ce-row">
+        <span class="ce-label">{{ t('settings.themeDensity') }}</span>
+        <SegmentedControl size="sm" :model-value="custom.density" :options="densityOptions" @change="setDensity" />
+      </div>
+      <div class="ce-row">
+        <span class="ce-label">{{ t('settings.themeFont') }}</span>
+        <SegmentedControl size="sm" :model-value="custom.font" :options="fontOptions" @change="setFont" />
       </div>
 
       <div class="mt-3 flex justify-end">

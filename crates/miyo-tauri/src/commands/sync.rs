@@ -333,11 +333,7 @@ async fn apply_snapshot(
     project_id: Uuid,
     snapshot: &BackupFile,
 ) -> Result<(), miyo_core::AppError> {
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(miyo_core::AppError::Database)?;
+    let mut tx = state.db.begin().await.map_err(miyo_storage::db_err)?;
 
     // 先 upsert 团队（项目 team_id 外键）。
     if let Some(team) = &snapshot.team {
@@ -402,7 +398,7 @@ async fn apply_snapshot(
     repo::save_proto_files_bulk(tx.as_mut(), &snapshot.proto_files).await?;
     repo::save_scenarios_bulk(tx.as_mut(), &scenarios).await?;
 
-    tx.commit().await.map_err(miyo_core::AppError::Database)?;
+    tx.commit().await.map_err(miyo_storage::db_err)?;
     Ok(())
 }
 
@@ -421,10 +417,15 @@ pub async fn sync_remote_list_projects(
         .list_projects()
         .await
         .map_err(|e| miyo_core::validation(e.to_string()))?;
+    // 存在性检查改一次拉全量项目 id 集合（N+1 治理：原逐条 SELECT）
+    let local_ids: std::collections::HashSet<Uuid> = repo::list_project_ids(&state.db)
+        .await?
+        .into_iter()
+        .collect();
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
         let exists = match Uuid::parse_str(&e.project_id) {
-            Ok(id) => repo::get_project(&state.db, id).await.is_ok(),
+            Ok(id) => local_ids.contains(&id),
             Err(_) => false,
         };
         out.push(serde_json::json!({

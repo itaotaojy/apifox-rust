@@ -53,23 +53,39 @@ pub struct AgentStatusInfo {
 /// channel 关闭（服务停止）后自然退出。
 pub async fn ensure_started(app: &tauri::AppHandle) -> CommandResult<String> {
     let state: State<'_, AppState> = app.state();
-    let mut guard = state.agent.write().await;
-    if let Some(server) = guard.as_ref() {
-        // 运行中也刷新端口文件，容忍外部误删
-        let _ = miyo_agent::portfile::write_port(&miyo_storage::db::data_dir(), server.port);
-        return Ok(server.address());
+    // 运行中快查（读锁）：顺带刷新端口文件，容忍外部误删
+    {
+        let guard = state.agent.read().await;
+        if let Some(server) = guard.as_ref() {
+            let _ = miyo_agent::portfile::write_port(&miyo_storage::db::data_dir(), server.port);
+            return Ok(server.address());
+        }
     }
 
+    // 锁外完成全部慢路径准备（DB 读 / 令牌 IO / TCP bind）——写锁只在
+    // CAS 托管瞬间持有（仿 mock_start 模式），不再阻塞并发的 agent_* 命令。
     let preferred_port = read_mcp_port(&state.db).await;
     let token = miyo_agent::load_or_create_token(&miyo_storage::db::data_dir()).map_err(|e| {
         CommandError::with_code(CommandErrorCode::Io, format!("Agent 令牌文件创建失败：{e}"))
     })?;
+    // Agent 控制面注入 AttachManager：仅 java feature 构建（无 feature 时
+    // java_attach 字段不存在，注入缺省 None → attach 模式 java 步骤优雅失败）。
+    #[cfg(feature = "java")]
+    let agent_state =
+        AgentState::new(state.db.clone(), token).with_java_attach(state.java_attach.clone());
+    #[cfg(not(feature = "java"))]
     let agent_state = AgentState::new(state.db.clone(), token);
     let mut events = agent_state.subscribe();
 
     let server = miyo_agent::server::start_at(agent_state, preferred_port).await?;
     let address = server.address();
     let _ = miyo_agent::portfile::write_port(&miyo_storage::db::data_dir(), server.port);
+    let mut guard = state.agent.write().await;
+    if let Some(existing) = guard.as_ref() {
+        // 并发启动竞态：败者停掉自己的新实例，沿用先到者
+        server.stop().await;
+        return Ok(existing.address());
+    }
     *guard = Some(server);
     drop(guard);
 

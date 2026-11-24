@@ -9,7 +9,9 @@
  * javaDebug store 的心跳定时器与在途状态（dispose 动作）。
  *
  * 后端对应物：miyo-plugin/builtins/java-debug/manifest.json（唯一事实源）；
- * 14 个 java_* IPC 命令在 Rust 侧按插件状态门禁（未安装 / 停用即拒绝）。
+ * v1 Runtime（java_*）与 v2 Attach（java_attach_* / java_agent_*）共 28 个
+ * IPC 命令在 Rust 侧按插件状态门禁（未安装 / 停用即拒绝；含进程发现——
+ * 未装插件不启动 launcher sidecar）。
  */
 import type { PluginFactory } from '@/plugins/types'
 
@@ -31,8 +33,14 @@ const plugin: PluginFactory = (ctx) => {
 
   return {
     async deactivate() {
-      // 释放插件运行时：连接心跳 / 在途状态 / 发现缓存（模块动态 import——
-      // deactivate 时该 store 通常已存在；不存在则无资源可释放）。
+      // 释放插件运行时：attach 轮询 / 会话状态 + v1 心跳与在途状态
+      //（模块动态 import——deactivate 时 store 通常已存在；不存在则无资源可释放）。
+      try {
+        const { useJavaAttachStore } = await import('./stores/javaAttach')
+        useJavaAttachStore().dispose()
+      } catch (err) {
+        ctx.logger.warn(`javaAttach store dispose failed: ${String(err)}`)
+      }
       try {
         const { useJavaDebugStore } = await import('./stores/javaDebug')
         useJavaDebugStore().dispose()

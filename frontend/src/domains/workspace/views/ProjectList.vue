@@ -25,6 +25,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import SettingsDialog from '@/domains/workspace/components/SettingsDialog.vue'
 import HeaderUpdateTag from '@/domains/workspace/components/HeaderUpdateTag.vue'
 import DashboardNav from '@/domains/workspace/components/projectlist/projectlist/DashboardNav.vue'
@@ -34,9 +35,11 @@ import ImportDialog from '@/domains/endpoint/components/ImportDialog.vue'
 import ProjectCard from '@/domains/workspace/components/projectlist/projectlist/ProjectCard.vue'
 import ProjectListRow from '@/domains/workspace/components/projectlist/projectlist/ProjectListRow.vue'
 import CustomSelect from '@/components/ui/CustomSelect.vue'
+import SearchInput from '@/components/ui/SearchInput.vue'
 import type { SelectOption } from '@/components/ui/CustomSelect.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import ProjectCreateModal from '@/domains/workspace/components/projectlist/projectlist/ProjectCreateModal.vue'
+import { lazyComponent } from '@/composables/lazyComponent'
 import TeamManageModal from '@/domains/workspace/components/projectlist/projectlist/TeamManageModal.vue'
 import SyncImportDialog from '@/domains/workspace/components/projectlist/projectlist/SyncImportDialog.vue'
 import ProjectRenameModal from '@/domains/workspace/components/projectlist/projectlist/ProjectRenameModal.vue'
@@ -376,7 +379,7 @@ function closeFilters(): void {
 }
 
 // ---------- 搜索快捷键（⌘K / Ctrl+K 聚焦；Esc 清空） ----------
-const searchEl = ref<HTMLInputElement | null>(null)
+const searchEl = ref<InstanceType<typeof SearchInput> | null>(null)
 
 // 快捷键走全局注册表（useShortcuts）：帮助面板自动收录、键位可自定义、
 // 卸载自动注销。路由级注册——离开仪表板即失效，工作区的 ⌘K 命令面板互不抢占。
@@ -598,11 +601,25 @@ function openCreateForTeam(teamId: string): void {
   showCreate.value = true
 }
 
-// ---------- 从远端导入（团队组头部「同步」入口） ----------
+// ---------- 从远端导入 / 同步配置（团队组头部「同步」「配置」入口） ----------
+const SyncDialog = lazyComponent(() => import('@/domains/workspace/components/SyncDialog.vue'))
 const importTeam = ref<{ id: string; name: string } | null>(null)
+const syncImportRef = ref<InstanceType<typeof SyncImportDialog> | null>(null)
+/** 团队同步配置（远端绑定管理）：projectId=null → SyncDialog 仅管理绑定，推/拉禁用。 */
+const syncConfigTeam = ref<{ id: string; name: string } | null>(null)
 
 function openImportForTeam(team: { id: string; name: string }): void {
   importTeam.value = team
+}
+
+function openSyncConfigFor(team: { id: string; name: string } | null): void {
+  syncConfigTeam.value = team
+}
+
+/** 同步配置关闭后：导入弹窗若开着，重新拉取远端清单（配置刚建好即可见）。 */
+function onSyncConfigClosed(): void {
+  syncConfigTeam.value = null
+  if (importTeam.value) syncImportRef.value?.reload()
 }
 
 /** 团队管理弹窗变更后：刷新团队分组 + 项目（改名/删除影响归属展示）。 */
@@ -931,7 +948,33 @@ useWindowDrag(topBarEl)
               </div>
             </div>
 
-            <!-- 卡片 2：最近活动（真实请求历史：方法 / 项目 / 接口 / 状态 / 耗时 / 时间） -->
+            <!-- 卡片 2：快速开始（右列 2×2 操作入口，填满 hero 右侧留白） -->
+            <div class="stat-card">
+              <span class="stat-icon tint-amber"><Icon name="zap" :size="16" /></span>
+              <div class="stat-body">
+                <span class="stat-label">{{ t('projectlist.quickStart') }}</span>
+                <div class="quick-grid">
+                  <button class="miyo-btn miyo-btn-primary" type="button" :title="t('projectlist.scratchHint')" @click="showScratch = true">
+                    <Icon name="send" :size="13" /> {{ t('projectlist.quickRequest') }}
+                  </button>
+                  <button class="miyo-btn" type="button" :title="t('projectlist.newProject')" @click="showCreate = true">
+                    <Icon name="plus" :size="13" /> {{ t('projectlist.createProject') }}
+                  </button>
+                  <button
+                    class="miyo-btn"
+                    type="button"
+                    :title="t('projectlist.importHint')"
+                    @click="droppedText = ''; showImport = true"
+                  >
+                    <Icon name="download" :size="13" /> {{ t('projectlist.importProject') }}
+                  </button>
+                  <button class="miyo-btn" type="button" :title="t('pnav.realtimeHint')" @click="router.push('/realtime')">
+                    <Icon name="globe" :size="13" /> {{ t('pnav.realtime') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <!-- 卡片 3：最近活动（通栏时间线：方法 / 项目 / 接口 / 状态 / 耗时 / 时间） -->
             <div class="stat-card">
               <span class="stat-icon tint-violet"><Icon name="history" :size="16" /></span>
               <div class="stat-body">
@@ -985,58 +1028,21 @@ useWindowDrag(topBarEl)
               </div>
             </div>
 
-            <!-- 卡片 3：快速开始（紧凑 2×2 操作入口，四按钮同尺寸同对齐） -->
-            <div class="stat-card">
-              <span class="stat-icon tint-amber"><Icon name="zap" :size="16" /></span>
-              <div class="stat-body">
-                <span class="stat-label">{{ t('projectlist.quickStart') }}</span>
-                <div class="quick-grid">
-                  <button class="miyo-btn miyo-btn-primary" type="button" :title="t('projectlist.scratchHint')" @click="showScratch = true">
-                    <Icon name="send" :size="13" /> {{ t('projectlist.quickRequest') }}
-                  </button>
-                  <button class="miyo-btn" type="button" :title="t('projectlist.newProject')" @click="showCreate = true">
-                    <Icon name="plus" :size="13" /> {{ t('projectlist.createProject') }}
-                  </button>
-                  <button
-                    class="miyo-btn"
-                    type="button"
-                    :title="t('projectlist.importHint')"
-                    @click="droppedText = ''; showImport = true"
-                  >
-                    <Icon name="download" :size="13" /> {{ t('projectlist.importProject') }}
-                  </button>
-                  <button class="miyo-btn" type="button" :title="t('pnav.realtimeHint')" @click="router.push('/realtime')">
-                    <Icon name="globe" :size="13" /> {{ t('pnav.realtime') }}
-                  </button>
-                </div>
-              </div>
-            </div>
           </section>
 
           <section class="toolbar">
             <div class="toolbar-left">
-              <div class="toolbar-filter">
-                <Icon name="search" :size="14" />
-                <input
-                  ref="searchEl"
-                  v-model="search"
-                  class="toolbar-filter-input"
-                  :placeholder="t('projectlist.filterPh')"
-                  :aria-label="t('projectlist.filterPh')"
-                  spellcheck="false"
-                  @keydown.esc="search = ''"
-                />
-                <button
-                  v-if="search"
-                  class="toolbar-filter-clear"
-                  type="button"
-                  :aria-label="t('common.clearSearch')"
-                  @click="search = ''"
-                >
-                  <Icon name="x" :size="12" />
-                </button>
-                <kbd v-else class="toolbar-kbd" aria-hidden="true">⌘K</kbd>
-              </div>
+              <SearchInput
+                ref="searchEl"
+                v-model="search"
+                size="md"
+                class="toolbar-filter"
+                :placeholder="t('projectlist.filterPh')"
+              >
+                <template #append>
+                  <kbd v-if="!search" class="toolbar-kbd" aria-hidden="true">⌘K</kbd>
+                </template>
+              </SearchInput>
               <CustomSelect
                 v-model="teamFilter"
                 class="toolbar-team"
@@ -1123,6 +1129,13 @@ useWindowDrag(topBarEl)
                   >
                     <Icon name="refresh" :size="12" /> {{ t('projectlist.teamSync') }}
                   </button>
+                  <IconButton
+                    name="settings"
+                    :size="13"
+                    :title="t('projectlist.teamSyncConfig')"
+                    :label="t('projectlist.teamSyncConfig')"
+                    @click="openSyncConfigFor(g.team)"
+                  />
                   <button
                     class="team-add miyo-btn miyo-btn-sm miyo-btn-ghost"
                     type="button"
@@ -1230,16 +1243,16 @@ useWindowDrag(topBarEl)
             </button>
           </div>
 
-          <div v-if="!filtered.length && !loading" class="dash-empty">
-            <span class="empty-icon"><Icon name="folder" :size="30" /></span>
-            <p class="empty-title">{{ search ? t('projectlist.noMatchTitle') : t('projectlist.emptyTitle') }}</p>
-            <p class="empty-hint">
-              {{ search ? t('projectlist.noMatchHint') : t('projectlist.emptyHint') }}
-            </p>
+          <EmptyState
+            v-if="!filtered.length && !loading"
+            icon="folder"
+            :title="search ? t('projectlist.noMatchTitle') : t('projectlist.emptyTitle')"
+            :description="search ? t('projectlist.noMatchHint') : t('projectlist.emptyHint')"
+          >
             <button class="miyo-btn miyo-btn-primary" type="button" @click="showCreate = true">
               <Icon name="plus" :size="14" /> {{ t('projectlist.newProject') }}
             </button>
-          </div>
+          </EmptyState>
         </template>
       </main>
     </div>
@@ -1248,11 +1261,22 @@ useWindowDrag(topBarEl)
     <TeamManageModal v-model:open="showTeamMgr" @changed="onTeamsChanged" />
     <SyncImportDialog
       v-if="importTeam"
+      ref="syncImportRef"
       :open="!!importTeam"
       :team-id="importTeam.id"
       :team-name="importTeam.name"
       @update:open="importTeam = null"
       @imported="load"
+      @configure="openSyncConfigFor(importTeam)"
+    />
+
+    <SyncDialog
+      v-if="syncConfigTeam"
+      :open="!!syncConfigTeam"
+      :project-id="null"
+      :project-name="syncConfigTeam.name"
+      :team-id="syncConfigTeam.id"
+      @update:open="onSyncConfigClosed"
     />
 
     <ProjectRenameModal :project="renaming" @close="renaming = null" @saved="onRenamed" />
@@ -1283,9 +1307,9 @@ useWindowDrag(topBarEl)
   background: var(--bg-app);
 }
 
-/* ---------- 顶部栏 ---------- */
+/* ---------- 顶部栏（高度对齐全局顶栏阶梯 44px：PageHeader .miyo-topbar 单源） ---------- */
 .dash-top {
-  height: 56px;
+  height: 44px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1342,12 +1366,10 @@ useWindowDrag(topBarEl)
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--text-on-accent);
   border-radius: var(--radius-md);
   background: var(--grad-primary);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 2px 8px var(--primary-glow);
+  box-shadow: 0 2px 8px var(--primary-glow);
 }
 
 .top-title {
@@ -1730,11 +1752,12 @@ useWindowDrag(topBarEl)
   font-family: var(--font-mono);
 }
 
-/* ---- 快速开始：紧凑 2×2 操作入口（按钮视觉走全局 miyo-btn 系，不再自绘） ---- */
+/* ---- 快速开始：紧凑 2×2 操作入口（列内容器上限 460px 防巨条；按钮走全局 miyo-btn 系） ---- */
 .quick-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  max-width: 460px;
   margin-top: 8px;
 }
 
@@ -1764,7 +1787,7 @@ useWindowDrag(topBarEl)
   background: var(--accent-tint);
   box-shadow:
     0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent),
-    0 8px 30px rgba(9, 12, 22, 0.45);
+    var(--shadow-lg);
   transform: translateY(-1px);
 }
 
@@ -1873,27 +1896,6 @@ useWindowDrag(topBarEl)
 
 /* .clear-btn 仅存类名作为测试/结构钩子，视觉全部由 miyo-btn 承担 */
 
-.toolbar-filter-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  margin-left: auto;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  padding: 0;
-}
-
-.toolbar-filter-clear:hover {
-  color: var(--text-1);
-  background: var(--bg-hover);
-}
-
 /* ⌘K 提示：输入框空时占位显示快捷键，聚焦时隐藏避免抢注意力 */
 .toolbar-kbd {
   flex-shrink: 0;
@@ -1916,39 +1918,10 @@ useWindowDrag(topBarEl)
   margin-left: 8px;
 }
 
+/* 搜索框：统一 SearchInput，仅保留定宽与工具行同款高度 */
 .toolbar-filter {
-  /* w-60：固定宽度 */
   width: 240px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
   height: var(--h-lg);
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-  color: var(--text-3);
-  transition:
-    border-color var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease);
-}
-.toolbar-filter:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-tint);
-}
-
-.toolbar-filter-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: none;
-  color: var(--text-1);
-  font-family: inherit;
-  font-size: var(--fs-xs);
-}
-.toolbar-filter-input::placeholder {
-  color: var(--text-3);
 }
 
 /* 分组 / 排序下拉：统一 36px 触发高度 */
@@ -2157,8 +2130,8 @@ useWindowDrag(topBarEl)
   backdrop-filter: blur(8px);
   border: 1px solid var(--accent) !important;
   box-shadow:
-    0 20px 50px rgba(9, 12, 22, 0.6),
-    0 0 40px rgba(9, 12, 22, 0.4) !important;
+    0 20px 50px rgba(0, 0, 0, 0.45),
+    0 0 40px rgba(0, 0, 0, 0.3) !important;
   transform: scale(1.03) rotate(1.5deg);
   cursor: grabbing;
 }
@@ -2168,34 +2141,9 @@ useWindowDrag(topBarEl)
   transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* ---------- 空状态 ---------- */
-.dash-empty {
+/* ---------- 空状态（EmptyState 组件撑满主区） ---------- */
+.dash-main > :deep(.es),
+.dash-main .es {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 48px 0;
-  text-align: center;
-}
-
-.empty-icon {
-  color: var(--text-3);
-  margin-bottom: 6px;
-}
-
-.empty-title {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.empty-hint {
-  margin: 0 0 10px;
-  font-size: var(--fs-xs);
-  color: var(--text-3);
-  max-width: 380px;
 }
 </style>

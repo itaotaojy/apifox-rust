@@ -249,15 +249,20 @@ pub async fn ai_delete_session(
 ) -> CommandResult<()> {
     let sid = Uuid::parse_str(&session_id)
         .map_err(|_| CommandError::validation("sessionId 不是合法 UUID"))?;
-    // 在途循环先取消。
-    if let Some(token) = state
-        .ai_chats
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .cancels
-        .remove(&session_id)
+    // 在途循环先取消（统一 TaskManager）+ 挂起审批前缀回收。
+    let _ = state.tasks.cancel(&session_id);
     {
-        token.cancel();
+        let mut reg = state.ai_chats.lock().unwrap_or_else(|p| p.into_inner());
+        let prefix = format!("{session_id}:");
+        let stale: Vec<String> = reg
+            .approvals
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in stale {
+            reg.approvals.remove(&k);
+        }
     }
     repo::delete_ai_session(&state.db, sid).await?;
     Ok(())
@@ -322,14 +327,24 @@ pub async fn ai_chat_send(
     // 工具清单（统一 Registry：按权限设置 + 停用列表过滤，与 tools/list 同规则）。
     let tools = build_tool_specs(&state.db).await?;
 
-    // 运行注册：取消令牌。
-    let token = CancellationToken::new();
-    state
-        .ai_chats
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .cancels
-        .insert(session_id.clone(), token.clone());
+    // 运行注册：统一 TaskManager（重发时先取消旧循环——修复「覆盖令牌导致
+    // 旧循环不可取消」漏洞）；同会话在途 → 明确拒绝。
+    if state
+        .tasks
+        .status(&session_id)
+        .map(|t| t.state == miyo_tasks::TaskState::Running)
+        .unwrap_or(false)
+    {
+        return Err(CommandError::with_code(
+            CommandErrorCode::Validation,
+            "该会话已有在途 AI 运行：请先停止或等待完成",
+        ));
+    }
+    let handle = state
+        .tasks
+        .start(session_id.clone(), miyo_tasks::TaskKind::AiChat, None)
+        .expect("同 id 任务重复注册应替换旧任务而非失败");
+    let token = handle.cancellation_token();
 
     // spawn 循环任务。
     let db = state.db.clone();
@@ -361,7 +376,9 @@ pub async fn ai_chat_send(
         )
         .await;
 
-        // 落库本轮新增消息（assistant / tool）。
+        // 落库本轮新增消息（assistant / tool）：先组装后单事务批量写入
+        //（N+1 治理：逐条 INSERT 产生等量事务往返；失败不再静默吞错）。
+        let mut rows: Vec<repo::AiMessageRow> = Vec::new();
         for m in messages.iter().skip(persist_from) {
             let row = match m.role {
                 miyo_ai::Role::Assistant => repo::AiMessageRow {
@@ -391,7 +408,7 @@ pub async fn ai_chat_send(
                 },
                 _ => continue,
             };
-            let _ = repo::append_ai_message(&db, &row).await;
+            rows.push(row);
         }
         // 产物消息落库（generate_* / analyze_* 的结构化产物）。
         let drained: Vec<serde_json::Value> = artifacts
@@ -400,7 +417,7 @@ pub async fn ai_chat_send(
             .drain(..)
             .collect();
         for artifact in drained {
-            let row = repo::AiMessageRow {
+            rows.push(repo::AiMessageRow {
                 id: Uuid::new_v4(),
                 session_id: sid,
                 seq: 0,
@@ -410,8 +427,11 @@ pub async fn ai_chat_send(
                 tool_call_id: None,
                 artifact_json: Some(serde_json::to_string(&artifact).unwrap_or_default()),
                 created_at: chrono::Utc::now(),
-            };
-            let _ = repo::append_ai_message(&db, &row).await;
+            });
+        }
+        if let Err(e) = repo::append_ai_messages_bulk(&db, &rows).await {
+            // 聊天记录静默丢失不可接受：失败必须留痕（会话仍可继续）
+            tracing::error!("AI 消息批量落库失败（{} 条）：{e}", rows.len());
         }
         // 收尾事件 + 注册表清理（guard 在块内释放，不跨 await）。
         {
@@ -500,15 +520,20 @@ pub async fn ai_chat_approve(
 /// 取消会话在途循环。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn ai_chat_cancel(state: State<'_, AppState>, session_id: String) -> CommandResult<()> {
-    let token = state
-        .ai_chats
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .cancels
-        .get(&session_id)
-        .cloned();
-    if let Some(t) = token {
-        t.cancel();
+    // 统一 TaskManager 取消（幂等）+ 挂起审批前缀回收
+    let _ = state.tasks.cancel(&session_id);
+    {
+        let mut reg = state.ai_chats.lock().unwrap_or_else(|p| p.into_inner());
+        let prefix = format!("{session_id}:");
+        let stale: Vec<String> = reg
+            .approvals
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in stale {
+            reg.approvals.remove(&k);
+        }
     }
     Ok(())
 }

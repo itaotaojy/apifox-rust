@@ -16,7 +16,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
-import Icon from '@/components/ui/Icon.vue'
+import PageHeader from '@/components/navigation/PageHeader.vue'
 import { useLocaleStore } from '@/stores/locale'
 import { useToast } from '@/composables/useToast'
 import { usePluginManager } from '@/plugins/manager'
@@ -42,6 +42,8 @@ const iframeRef = ref<HTMLIFrameElement | null>(null)
 
 let bridge: HostRpcBridge | null = null
 let onMessage: ((event: MessageEvent) => void) | null = null
+/** 当前 iframe 实例的 RPC 会话 nonce（loadPlugin 每次刷新重置）。 */
+let sessionNonce: string | undefined = undefined
 
 /** 装载插件页面并建立 RPC 桥。 */
 async function loadPlugin(): Promise<void> {
@@ -61,11 +63,20 @@ async function loadPlugin(): Promise<void> {
   }
   loadState.value = 'loading'
   try {
-    // 入口文件相对 install_path（manifest.entry 由后端校验为相对路径）
+    // 入口文件相对 install_path：走专用收口命令 plugin_read_asset
+    //（路径限制在受管目录内 / 拒 symlink / 扩展名白名单），不再经通用
+    // read_text_file（任意路径读）。
     const entryFile = view.manifest.entry ?? 'index.html'
-    const html = await invoke<string>(`${IPC_PREFIX}read_text_file`, {
-      path: `${installPath}/${entryFile}`,
+    const html = await invoke<string>(`${IPC_PREFIX}plugin_read_asset`, {
+      id: view.id,
+      relPath: entryFile,
     })
+    // 会话 nonce：本实例 RPC 桥的绑定标识。blob URL 无法携带 fragment，
+    // v1 插件帧不回传（桥对「不携带 n」的帧跳过此项校验，保持兼容）；
+    // v2 SDK 起强制回传（见 docs/plugin/SDK.md）。
+    sessionNonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
     // Blob URL：frame-src 'blob:' 已在 CSP 放行；沙箱属性见模板。
     htmlUrl.value = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
     loadState.value = 'ready'
@@ -103,6 +114,7 @@ function onIframeLoad(): void {
     sourceWindow: target,
     postMessage: (frameData: RpcOutboundFrame) => target.postMessage(frameData, '*'),
     session,
+    nonce: sessionNonce,
   })
   onMessage = (event: MessageEvent) => {
     // 只接受本宿主 iframe 的消息（沙箱 origin 是 opaque，不能按 origin 过滤）
@@ -113,7 +125,7 @@ function onIframeLoad(): void {
 }
 
 watch(
-  () => [pluginId.value, entry.value?.runtime] as const,
+  [() => pluginId.value, () => entry.value?.runtime],
   () => {
     if (route.path !== pluginRoutePath.value) return
     void loadPlugin()
@@ -129,17 +141,20 @@ onBeforeUnmount(disposeBridge)
 
 <template>
   <div class="ph-root">
-    <header class="ph-topbar">
-      <Icon name="package" :size="15" />
-      <span class="ph-title">
-        {{ entry ? (entry.view.manifest.name_key ? t(entry.view.manifest.name_key) : entry.view.manifest.name) : (pluginId ?? '') }}
-      </span>
+    <!-- 顶栏：PageHeader 统一导航（插件宿主也是工作台形态）。返回钮走统一
+         返回策略（原路返回来源页，深链直开回插件中心兜底）；右侧「插件中心」
+         是去往管理中心的快捷动作，与返回语义不同，保留。 -->
+    <PageHeader
+      :title="entry ? (entry.view.manifest.name_key ? t(entry.view.manifest.name_key) : entry.view.manifest.name) : (pluginId ?? '')"
+      back-fallback="/plugins"
+    >
       <span class="ph-badge">{{ t('plugins.host.sandboxBadge') }}</span>
-      <div class="ph-spacer"></div>
-      <button class="miyo-btn miyo-btn-sm" type="button" @click="router.push('/plugins')">
-        {{ t('plugins.host.backToCenter') }}
-      </button>
-    </header>
+      <template #actions>
+        <button class="miyo-btn miyo-btn-sm" type="button" @click="router.push('/plugins')">
+          {{ t('plugins.host.backToCenter') }}
+        </button>
+      </template>
+    </PageHeader>
     <main class="ph-body">
       <div v-if="loadState === 'loading'" class="ph-state">{{ t('plugins.host.loading') }}</div>
       <div v-else-if="loadState === 'error'" class="ph-state ph-error" role="alert">
@@ -172,23 +187,6 @@ onBeforeUnmount(disposeBridge)
   color: var(--text-1);
 }
 
-.ph-topbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  -webkit-app-region: drag;
-}
-.ph-topbar > * {
-  -webkit-app-region: no-drag;
-}
-.ph-title {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
 .ph-badge {
   font-size: var(--fs-2xxs);
   padding: 1px 6px;
@@ -196,9 +194,7 @@ onBeforeUnmount(disposeBridge)
   border: 1px solid color-mix(in srgb, var(--info) 50%, transparent);
   color: var(--info);
   background: color-mix(in srgb, var(--info) 10%, transparent);
-}
-.ph-spacer {
-  flex: 1;
+  white-space: nowrap;
 }
 
 .ph-body {

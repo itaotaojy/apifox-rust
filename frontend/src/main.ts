@@ -22,6 +22,19 @@ if (navigator.userAgent.includes('Mac')) {
   document.documentElement.setAttribute('data-platform', 'macos')
 }
 
+// 窗口标记：只有主窗（label 'main'）是 Overlay 标题栏、交通灯压在 Web 内容
+// 左上角；实时调试 popout 等弹出子窗用原生标题栏，无需预留。label 与官方
+// getCurrentWindow() 同源（__TAURI_INTERNALS__.metadata.currentWindow.label），
+// 同步读避免首帧闪烁；浏览器预览无此内部对象，不设置。
+const windowLabel = (
+  window as unknown as {
+    __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } }
+  }
+).__TAURI_INTERNALS__?.metadata?.currentWindow?.label
+if (windowLabel) {
+  document.documentElement.setAttribute('data-window', windowLabel)
+}
+
 const pinia = createPinia()
 
 // 品牌更名（RustFox → Miyo）的 localStorage 旧键迁移：必须先于任何读偏好键的
@@ -33,16 +46,23 @@ useThemeStore(pinia).init()
 void bootstrap()
 
 async function bootstrap(): Promise<void> {
-  // 等启动语言字典就绪再挂载：首帧即完整文案，不回落另一语言。
-  // （模块顶层 await 会撞 es2020 构建目标，故放这里。）
-  await useLocaleStore(pinia).init()
-  // 插件系统引导：拉取已安装插件并激活启用项（异步，不阻塞首屏挂载；
-  // 激活完成前导航区不含插件项——按需加载，未启用插件零字节拉取）。
-  void usePluginManager(pinia).boot()
-  createApp(App)
-    .use(pinia)
-    .use(router)
-    .directive('tooltip-overflow', tooltipOverflow)
-    .directive('focus-end', focusEnd)
-    .mount('#app')
+  const boot = (window as unknown as { __MIYO_BOOT__?: { done?: () => void; fail?: (err: unknown) => void } }).__MIYO_BOOT__
+  try {
+    // 等启动语言字典就绪再挂载：首帧即完整文案，不回落另一语言。
+    // （模块顶层 await 会撞 es2020 构建目标，故放这里。）
+    await useLocaleStore(pinia).init()
+    // 插件系统引导：拉取已安装插件并激活启用项（异步，不阻塞首屏挂载；
+    // 激活完成前导航区不含插件项——按需加载，未启用插件零字节拉取）。
+    void usePluginManager(pinia).boot()
+    createApp(App)
+      .use(pinia)
+      .use(router)
+      .directive('tooltip-overflow', tooltipOverflow)
+      .directive('focus-end', focusEnd)
+      .mount('#app')
+    boot?.done?.()
+  } catch (err) {
+    console.error('[miyo.bootstrap]', err)
+    boot?.fail?.(err)
+  }
 }

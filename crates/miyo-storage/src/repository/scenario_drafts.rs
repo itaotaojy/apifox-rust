@@ -4,6 +4,7 @@
 //! - `draft_json`：草稿本体（应用 = 回写 draft_json）；
 //! - `applied_at`：已应用时间（None = 待应用）。
 
+use crate::db::db_err;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -37,6 +38,10 @@ pub struct ScenarioDraftRow {
 }
 
 /// 保存草稿（新草稿总是待应用状态）。
+/// 每场景保留的草稿上限（草稿是「保留修改历史 + 允许撤销」的产品特性——
+/// 不能 upsert 覆盖；但 ai.rs 每次保存都新插一行，不设上限会无限增长）。
+const SCENARIO_DRAFTS_KEEP_PER_SCENARIO: i64 = 10;
+
 pub async fn save_scenario_draft(db: &SqlitePool, draft: &ScenarioDraftRow) -> Result<()> {
     sqlx::query(
         "INSERT INTO scenario_drafts (id, scenario_id, base_json, draft_json, summary, source, created_at, applied_at)
@@ -51,7 +56,20 @@ pub async fn save_scenario_draft(db: &SqlitePool, draft: &ScenarioDraftRow) -> R
     .bind(draft.created_at.to_rfc3339())
     .execute(db)
     .await
-    .map_err(AppError::from)?;
+    .map_err(db_err)?;
+    // 限界：仅保留每场景最近 N 条（按 created_at 倒序）
+    sqlx::query(
+        "DELETE FROM scenario_drafts WHERE scenario_id = ? AND id NOT IN (
+             SELECT id FROM scenario_drafts WHERE scenario_id = ?
+             ORDER BY created_at DESC LIMIT ?
+         )",
+    )
+    .bind(draft.scenario_id.to_string())
+    .bind(draft.scenario_id.to_string())
+    .bind(SCENARIO_DRAFTS_KEEP_PER_SCENARIO)
+    .execute(db)
+    .await
+    .map_err(db_err)?;
     Ok(())
 }
 
@@ -69,7 +87,7 @@ pub async fn list_scenario_drafts(
     .bind(limit)
     .fetch_all(db)
     .await
-    .map_err(AppError::from)?;
+    .map_err(db_err)?;
     rows.into_iter()
         .map(
             |(id, sid, base, draft, summary, source, created, applied)| {
@@ -100,7 +118,7 @@ pub async fn get_scenario_draft(
     .bind(draft_id.to_string())
     .fetch_optional(db)
     .await
-    .map_err(AppError::from)?;
+    .map_err(db_err)?;
     row.map(
         |(id, sid, base, draft, summary, source, created, applied)| {
             Ok(ScenarioDraftRow {
@@ -125,7 +143,7 @@ pub async fn mark_scenario_draft_applied(db: &SqlitePool, draft_id: Uuid) -> Res
         .bind(draft_id.to_string())
         .execute(db)
         .await
-        .map_err(AppError::from)?;
+        .map_err(db_err)?;
     Ok(())
 }
 
@@ -135,18 +153,18 @@ pub async fn delete_scenario_draft(db: &SqlitePool, draft_id: Uuid) -> Result<()
         .bind(draft_id.to_string())
         .execute(db)
         .await
-        .map_err(AppError::from)?;
+        .map_err(db_err)?;
     Ok(())
 }
 
 fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
-        .map_err(|e| AppError::Database(sqlx::Error::Protocol(format!("时间戳解析失败：{e}"))))
+        .map_err(|e| AppError::Database(format!("时间戳解析失败：{e}")))
 }
 
 fn uuid_err(e: uuid::Error) -> AppError {
-    AppError::Database(sqlx::Error::Protocol(format!("UUID 解析失败：{e}")))
+    AppError::Database(format!("UUID 解析失败：{e}"))
 }
 
 #[cfg(test)]

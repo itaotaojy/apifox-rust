@@ -99,7 +99,7 @@ async function loadCatalog(forceReload = false): Promise<void> {
 
 /** 切端点 / 切 proto 引用后目录过期。 */
 watch(
-  () => [props.draft.id, spec.value.proto_ids.join(','), spec.value.use_tls] as const,
+  [() => props.draft.id, () => spec.value.proto_ids.join(','), () => spec.value.use_tls],
   () => {
     if (catalogEndpointId.value !== props.draft.id) {
       catalog.value = null
@@ -379,7 +379,7 @@ const streamBadge = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-2);
   padding-bottom: 6px;
   cursor: pointer;
@@ -407,7 +407,7 @@ const streamBadge = computed(() => {
 .stream-badge {
   font-size: var(--fs-xxs);
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: var(--grpc);
   background: color-mix(in srgb, var(--grpc) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--grpc) 25%, transparent);
@@ -481,7 +481,7 @@ const streamBadge = computed(() => {
   cursor: pointer;
 }
 .proto-name {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--text-1);
   font-family: var(--font-mono, monospace);
   overflow: hidden;

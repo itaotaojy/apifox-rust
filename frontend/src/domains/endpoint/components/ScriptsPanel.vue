@@ -84,7 +84,7 @@ const postResponse = computed({
 
 .script-title {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text-2);
 }
@@ -99,13 +99,13 @@ const postResponse = computed({
   background: var(--bg-code);
   color: var(--text-1);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
   outline: none;
 }
 
 .script-editor:focus {
-  border-color: var(--accent, #a78bfa);
+  border-color: var(--accent);
 }
 
 .script-hint {

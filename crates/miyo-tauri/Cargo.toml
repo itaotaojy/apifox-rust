@@ -26,8 +26,16 @@ miyo-agent = { path = "../miyo-agent" }
 miyo-backup = { path = "../miyo-backup" }
 miyo-sync = { path = "../miyo-sync" }
 miyo-grpc = { path = "../miyo-grpc" }
-miyo-java = { path = "../miyo-java" }
+# Java 调试能力（feature「java」，默认开）：核心裁剪构建用
+# --no-default-features（或 default = []）剔除 Attach 编排与 30 条命令。
+miyo-java = { path = "../miyo-java", optional = true }
+miyo-java-attach = { path = "../miyo-java-attach", optional = true }
+miyo-sidecar = { path = "../miyo-sidecar" }
+miyo-tasks = { path = "../miyo-tasks" }
 miyo-openapi = { path = "../miyo-openapi" }
+# Java 组件下载哈希校验（sha256 sidecar）
+sha2 = "0.11"
+hex = "0.4"
 miyo-test = { path = "../miyo-test" }
 miyo-plugin = { path = "../miyo-plugin" }
 
@@ -74,7 +82,27 @@ ts-rs = { version = "12", optional = true, default-features = false, features = 
 ] }
 
 [features]
+default = ["java"]
+# Java Debug 全能力（v1 Runtime 客户端 + v2 Attach 编排 + 30 条 IPC 命令 +
+# 组件自动下载）。关闭后 java_* 命令仍注册但一律返回 FEATURE_UNAVAILABLE
+# （stub 见 commands/java_gate.rs）——前端诊断 UI 可读，列表不报未知命令。
+java = ["dep:miyo-java", "dep:miyo-java-attach"]
 ts = ["dep:ts-rs", "miyo-core/ts", "miyo-http/ts", "miyo-plugin/ts"]
+
+[dev-dependencies]
+tempfile = "3"
+# 更新/回滚 E2E：内存构造 .miyo 包（tar.gz + sha256）
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+sha2 = "0.11"
+hex = "0.4"
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }
+
+# dev 构建瘦身：行号表级调试信息（backtrace 仍带行号；lldb 变量检查降级）。
+# 依赖与测试二进制体积约降 60%——target/ 的最大增长源（deps 15G 实测）。
+# 需要完整变量调试时临时改回 debug = true 并重编。
+[profile.dev]
+debug = "line-tables-only"
+

@@ -29,6 +29,12 @@ const props = defineProps<{
   invoking: boolean
   hasConnection: boolean
   hasTemplate: boolean
+  /** attach 模式扩展：实例解析策略 / 风险分级（v1 runtime 模式不传）。 */
+  attachMode?: boolean
+  agentRisk?: string | null
+  agentRiskReason?: string | null
+  canInstantiate?: boolean
+  isProxy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,12 +42,36 @@ const emit = defineEmits<{
   'update:argsJson': [value: string]
   'update:editMode': [value: 'form' | 'json']
   'update:timeout': [value: number | null]
+  'update:instanceKind': [value: 'auto' | 'static' | 'bean' | 'new']
+  'update:newConsent': [value: boolean]
   run: []
   cancel: []
   saveTemplate: []
   useTemplate: []
 }>()
 const timeoutValue = ref<number | null>(null)
+
+/** attach 实例解析选项（实例方法才有意义；static 方法固定 static）。 */
+const instanceOptions = computed<SegmentOption[]>(() => [
+  { value: 'auto', label: t('java2.instanceAuto') },
+  { value: 'static', label: t('java2.instanceStatic') },
+  { value: 'bean', label: t('java2.instanceBean') },
+  { value: 'new', label: t('java2.instanceNew') },
+])
+
+// attach 实例策略：外部受控值（store） + new 前置确认
+const instanceKindValue = defineModel<'auto' | 'static' | 'bean' | 'new'>('instanceKind', {
+  default: 'auto',
+})
+const newConsent = defineModel<boolean>('newConsent', { default: false })
+
+function onInstanceKindChange(value: string | number | null): void {
+  const kind = String(value) as 'auto' | 'static' | 'bean' | 'new'
+  instanceKindValue.value = kind
+  if (kind !== 'new') {
+    newConsent.value = false
+  }
+}
 
 function onTimeoutChange(event: Event): void {
   const raw = (event.target as HTMLInputElement).value.trim()
@@ -68,7 +98,7 @@ const formValues = ref<unknown[]>([])
 
 /** argsJson → 表单值（JSON 模式切回表单时同步）。 */
 watch(
-  () => [props.argsJson, props.editMode] as const,
+  [() => props.argsJson, () => props.editMode],
   ([json, mode]) => {
     if (mode !== 'form') return
     try {
@@ -286,6 +316,10 @@ function onRunClick(): void {
                 <span class="jmp-method-name">{{ m.method_name }}</span>
                 <span v-if="m.overloaded" class="jmp-badge">{{ t('java.overloadedBadge') }}</span>
                 <span v-if="m.static_method" class="jmp-badge jmp-badge-static">{{ t('java.staticBadge') }}</span>
+                <span
+                  v-if="attachMode && m.visibility === 'private'"
+                  class="jmp-badge"
+                >private</span>
                 <span class="jmp-method-ret">{{ m.return_generic || m.return_type }}</span>
               </span>
               <span class="jmp-method-sig">{{ m.signature }}</span>
@@ -394,6 +428,33 @@ function onRunClick(): void {
             {{ validationError }}
           </p>
 
+          <!-- attach 模式：实例解析策略（static 方法固定直调；实例方法可选
+               auto / bean / new——new 需显式确认，构造器会执行） -->
+          <div v-if="attachMode && activeMethod && !activeMethod.static_method" class="jmp-instance">
+            <div class="jmp-instance-row">
+              <span class="jmp-instance-label">{{ t('java2.instanceKindLabel') }}</span>
+              <SegmentedControl
+                :model-value="instanceKindValue"
+                :options="instanceOptions"
+                size="sm"
+                data-testid="java-instance-kind"
+                @update:model-value="onInstanceKindChange"
+              />
+            </div>
+            <p v-if="instanceKindValue === 'new'" class="jmp-instance-warn">
+              {{ t('java2.instanceNewWarn') }}
+            </p>
+            <label v-if="instanceKindValue === 'new'" class="jmp-instance-consent">
+              <input
+                type="checkbox"
+                :checked="newConsent"
+                data-testid="java-new-consent"
+                @change="emit('update:newConsent', ($event.target as HTMLInputElement).checked)"
+              />
+              <span>{{ t('java2.instanceNewConsent') }}</span>
+            </label>
+          </div>
+
           <!-- 危险方法二次确认 -->
           <div v-if="dangerousConfirm && dangerKeyword" class="jmp-danger" data-testid="java-danger-confirm">
             <p class="jmp-danger-text">
@@ -495,9 +556,9 @@ function onRunClick(): void {
 }
 .jmp-section-title {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xxs);
   font-weight: 600;
-  color: var(--text-tertiary, var(--text-secondary));
+  color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -518,7 +579,7 @@ function onRunClick(): void {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text);
+  color: var(--text-1);
   text-align: left;
   cursor: pointer;
 }
@@ -534,19 +595,19 @@ function onRunClick(): void {
   gap: 6px;
 }
 .jmp-method-name {
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--font-mono, monospace);
 }
 .jmp-method-ret {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--text-tertiary, var(--text-secondary));
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
   font-family: var(--font-mono, monospace);
 }
 .jmp-method-sig {
-  font-size: 11px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xxs);
+  color: var(--text-2);
   font-family: var(--font-mono, monospace);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -554,10 +615,10 @@ function onRunClick(): void {
 }
 .jmp-badge {
   padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-2xxs);
   background: var(--bg-hover);
-  color: var(--text-secondary);
+  color: var(--text-2);
 }
 .jmp-badge-static {
   font-family: var(--font-mono, monospace);
@@ -577,8 +638,8 @@ function onRunClick(): void {
   gap: 8px;
 }
 .jmp-sig {
-  font-size: 11px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xxs);
+  color: var(--text-2);
   font-family: var(--font-mono, monospace);
   background: var(--bg-elevated);
   border-radius: var(--radius-sm);
@@ -592,8 +653,8 @@ function onRunClick(): void {
   gap: 8px;
 }
 .jmp-noargs {
-  font-size: 12px;
-  color: var(--text-tertiary, var(--text-secondary));
+  font-size: var(--fs-xs);
+  color: var(--text-3);
   padding: 8px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
@@ -614,7 +675,7 @@ function onRunClick(): void {
   gap: 6px;
 }
 .jmp-mini-btn {
-  font-size: 11px;
+  font-size: var(--fs-xxs);
   padding: 3px 8px;
 }
 .jmp-param-complex {
@@ -630,8 +691,8 @@ function onRunClick(): void {
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xxs);
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -644,7 +705,7 @@ function onRunClick(): void {
 }
 .jmp-danger-text {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--danger, #ef4444);
   line-height: 1.55;
   word-break: break-all;
@@ -672,16 +733,16 @@ function onRunClick(): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
   font-family: var(--font-mono, monospace);
 }
 .jmp-param-type {
-  color: var(--text-tertiary, var(--text-secondary));
-  font-size: 11px;
+  color: var(--text-3);
+  font-size: var(--fs-xxs);
 }
 .jmp-param-req {
-  font-size: 10px;
+  font-size: var(--fs-2xxs);
   color: var(--primary);
 }
 .jmp-json {
@@ -689,7 +750,7 @@ function onRunClick(): void {
 }
 .jmp-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--danger, #ef4444);
 }
 .jmp-run-row {
@@ -701,8 +762,8 @@ function onRunClick(): void {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
 }
 .jmp-timeout .miyo-input {
   width: 110px;

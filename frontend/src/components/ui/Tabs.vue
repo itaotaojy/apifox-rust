@@ -108,12 +108,12 @@ function onKeydown(event: KeyboardEvent): void {
 .tabs.size-md .tab {
   height: 34px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .tabs.size-sm .tab {
   height: 30px;
   padding: 0 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
 }
 
 .tab {
@@ -156,10 +156,9 @@ function onKeydown(event: KeyboardEvent): void {
   height: 2px;
   border-radius: 1px;
   background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
 }
 .tab:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: default;
 }
 
@@ -170,7 +169,7 @@ function onKeydown(event: KeyboardEvent): void {
   min-width: 16px;
   height: 16px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-family: var(--font-mono);
   font-size: var(--fs-xxs);
   font-weight: 600;

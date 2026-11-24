@@ -20,7 +20,10 @@ members = [
     "crates/miyo-sync",
     "crates/miyo-cli",
     "crates/miyo-java",
+    "crates/miyo-java-attach",
     "crates/miyo-plugin",
+    "crates/miyo-sidecar",
+    "crates/miyo-tasks",
 ]
 
 [workspace.package]
@@ -131,7 +134,7 @@ schemars = "1"
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
 # 插件签名校验（ed25519）：miyo-plugin 专用
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 
 # Rust → TypeScript 类型生成（miyo-core/miyo-tauri 的 `ts` feature 可选启用，
 # 由 crates/*/tests/ts_bindings.rs 导出到 frontend/src/types/generated/）。
@@ -142,6 +145,12 @@ ts-rs = { version = "12", default-features = false, features = [
     "chrono-impl",
     "serde-json-impl",
 ] }
+
+# dev 构建瘦身：行号表级调试信息（backtrace 仍带行号；lldb 变量检查降级）。
+# 依赖与测试二进制体积约降 60%——target/ 的最大增长源（deps 15G 实测）。
+# 需要完整变量调试时临时改回 debug = true 并重编。
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 lto = "thin"

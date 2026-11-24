@@ -427,14 +427,17 @@ function peekOf(response: { body?: string | null } | null | undefined): string {
   background: var(--bg-panel);
 }
 
-/* 全屏查看：覆盖视口（CSS 全屏，Esc 经 escStack 退出；见 useOverlayFullscreen） */
+/* 全屏查看：全出血覆盖视口（Esc 经 escStack 退出；见 useOverlayFullscreen）；
+ * macOS 交通灯预留见 style.css 全局规则 */
 .se-report.fullscreen {
   position: fixed;
-  inset: 14px;
+  inset: 0;
   z-index: var(--z-overlay);
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-lg);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 .se-report.fullscreen .se-report-headrow {
   flex: none;
@@ -499,7 +502,7 @@ function peekOf(response: { body?: string | null } | null | undefined): string {
   flex: none;
   font-size: var(--fs-xxs);
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .se-report-badge.ok {
@@ -529,10 +532,10 @@ function peekOf(response: { body?: string | null } | null | undefined): string {
   display: inline-flex;
   align-items: center;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-2xxs);
   font-weight: 600;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .se-chip.ok {
@@ -600,14 +603,14 @@ function peekOf(response: { body?: string | null } | null | undefined): string {
 
 .se-progress-track {
   height: 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-hover);
   overflow: hidden;
 }
 
 .se-progress-bar {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   transition: width 0.3s var(--ease);
 }

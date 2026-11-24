@@ -50,6 +50,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod sessions;
 pub mod state;
 
 use tauri::Manager;
@@ -81,6 +82,47 @@ fn init_tracing() {
         .with_ansi(false)
         .with_writer(writer)
         .try_init();
+}
+
+/// Java Attach 工具 jar 候选目录（按序取第一个就绪的）：
+/// 仅 java feature 构建编译（无 feature 时 AttachManager 不存在）。
+/// 1. Tauri 资源目录（打包后：`Contents/Resources/resources/java/`，
+///    对应 `tauri.conf.json` `bundle.resources: ["resources/java/*"]`——
+///    路径保留 `resources/` 前缀，须 `resolve("resources/java")`；
+///    曾误写 `resolve("java")` → 随包 jar 永远找不到，正式版只能靠下载）；
+/// 2. 开发回退：仓库 java/dist/（scripts/build_java_debug.sh 产物）。
+#[cfg(feature = "java")]
+fn java_attach_jar_candidates(app: &tauri::AppHandle) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    // 0. 组件自动下载落地目录（市场远程获取的 jar 优先于随包资源——
+    //    远程版本可能比安装包携带的更新）
+    candidates.push(miyo_storage::db::data_dir().join("java"));
+    // bundle.resources 条目是 `resources/java/*`，Resource 根下完整相对路径
+    // 为 `resources/java`（macOS 安装包实证：Contents/Resources/resources/java/）。
+    if let Ok(res_dir) = app
+        .path()
+        .resolve("resources/java", tauri::path::BaseDirectory::Resource)
+    {
+        candidates.push(res_dir);
+    }
+    // 兼容旧解析 / 偶发扁平布局（resources 直接落到 Resource/java）
+    if let Ok(res_dir) = app
+        .path()
+        .resolve("java", tauri::path::BaseDirectory::Resource)
+    {
+        candidates.push(res_dir);
+    }
+    // dev 回退：CARGO_MANIFEST_DIR 在编译期已知（miyo-tauri/src → 仓库根 java/dist）
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        candidates.push(
+            std::path::PathBuf::from(manifest_dir)
+                .join("..")
+                .join("..")
+                .join("java")
+                .join("dist"),
+        );
+    }
+    candidates
 }
 
 /// 插件命名空间。`init()` 注册状态与全部 Command。
@@ -188,7 +230,31 @@ pub mod plugin {
                     // 按保留天数清理过期日志（失败仅记日志）
                     commands::log::cleanup_logs_on_startup(&db);
                     // 恢复持久化的激活项目 / 环境（settings 表，含归属校验）
-                    let state = AppState::new(db);
+                    let state = AppState::new(
+                        db,
+                        #[cfg(feature = "java")]
+                        java_attach_jar_candidates(app),
+                        #[cfg(not(feature = "java"))]
+                        Vec::new(),
+                    );
+                    // Java Attach 会话心跳常驻（失联会话移除 + infoFile 过期
+                    // 清扫；首个 tick 立即触发，兼作启动清扫）。
+                    // setup 回调不在 tokio 上下文内——必须经 tauri 的运行时驱动。
+                    // 句柄注册进 TaskManager（原句柄丢弃——退出时随 runtime 结束，
+                    // 现在有明确的取消与可见性）。
+                    // 仅 java feature 构建：核心裁剪构建无 AttachManager、零后台任务。
+                    #[cfg(feature = "java")]
+                    tauri::async_runtime::block_on(async {
+                        let heartbeat = state
+                            .java_attach
+                            .spawn_heartbeat(std::time::Duration::from_secs(30));
+                        let _ = state.tasks.start(
+                            "internal:java-attach-heartbeat".to_string(),
+                            miyo_tasks::TaskKind::JavaAttach,
+                            None,
+                        );
+                        drop(heartbeat); // 常驻循环：退出时随 runtime 结束
+                    });
                     let _ = tauri::async_runtime::block_on(state.restore_active());
                     app.manage(state);
                     // Agent 控制面随应用自动拉起（幂等；失败仅记日志不阻断启动）；
@@ -313,7 +379,37 @@ pub mod plugin {
                 commands::plugin_data_set,
                 commands::plugin_data_delete,
                 commands::plugin_data_keys,
+                commands::plugin_session_create,
+                commands::plugin_read_asset,
+                commands::plugin_sidecar_start,
+                commands::plugin_sidecar_stop,
+                commands::plugin_sidecar_status,
+                commands::plugin_sidecar_request,
+                commands::plugin_update_from_path,
+                commands::plugin_rollback,
+                commands::plugin_market_index,
+                commands::plugin_dir_get,
+                commands::plugin_versions,
+                commands::plugin_inspect_from_url,
+                commands::plugin_install_from_cached,
                 // Java 方法实时调试（commands/java_debug.rs，插件门禁见该文件）
+                // Java Debug 2.0 Attach（commands/java_attach.rs）
+                commands::java_discover_processes,
+                commands::java_probe_pid,
+                commands::java_attach_process,
+                commands::java_detach_process,
+                commands::java_unload_agent,
+                commands::java_attach_sessions,
+                commands::java_agent_status,
+                commands::java_agent_spring_status,
+                commands::java_agent_classes,
+                commands::java_agent_class_detail,
+                commands::java_agent_methods,
+                commands::java_agent_beans,
+                commands::java_agent_invoke,
+                commands::java_agent_cancel,
+                commands::java_component_status,
+                commands::java_component_download,
                 commands::list_java_projects,
                 commands::save_java_project,
                 commands::delete_java_project,

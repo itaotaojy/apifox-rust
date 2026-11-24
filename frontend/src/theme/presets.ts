@@ -5,7 +5,8 @@
  *   style.css 对应 [data-theme-id] 块中的 --bg-app/--bg-card/--accent 保持一致；
  * - DEFAULT_CONFIG 为首次启动与「恢复默认主题」的基准（石墨深色）；
  * - parseThemeConfig 负责导入 JSON / 读取 localStorage 的结构与取值校验，
- *   任何非法字段回退默认值（不抛错，返回 null 表示整体不可用）。
+ *   任何非法字段回退默认值（不抛错，返回 null 表示整体不可用）；
+ * - density / font 为 v1 后增字段：旧配置缺省时回退默认值，无需迁移。
  */
 import type {
   BackgroundConfig,
@@ -14,7 +15,10 @@ import type {
   CustomThemeConfig,
   ThemeBase,
   ThemeConfigV1,
+  ThemeDensity,
+  ThemeFont,
   ThemeId,
+  ThemeStyle,
 } from './types'
 
 export interface ThemePreset {
@@ -23,14 +27,16 @@ export interface ThemePreset {
   swatch: { app: string; card: string; accent: string }
 }
 
-/** 六个内置主题：2 深（石墨/海盐）+ 4 浅（极简/森林/暖沙/紫雾）。 */
+/** 八个内置主题：深色 3（石墨/海盐蓝/森林绿）+ 浅色 5（极简/海盐浅蓝/森林浅绿/暖沙/紫雾）。 */
 export const BUILTIN_THEMES: ThemePreset[] = [
-  { id: 'light', base: 'light', swatch: { app: '#f4f5f6', card: '#ffffff', accent: '#6d5ce6' } },
-  { id: 'dark', base: 'dark', swatch: { app: '#0f0f10', card: '#1d1d21', accent: '#8380e8' } },
-  { id: 'ocean', base: 'dark', swatch: { app: '#0f151d', card: '#18212e', accent: '#5b8fd9' } },
-  { id: 'forest', base: 'light', swatch: { app: '#eff3ee', card: '#ffffff', accent: '#3e7d54' } },
-  { id: 'sand', base: 'light', swatch: { app: '#f5efe6', card: '#fffdf8', accent: '#a06b3d' } },
-  { id: 'lavender', base: 'light', swatch: { app: '#f1eff6', card: '#fcfbfe', accent: '#8a76d8' } },
+  { id: 'light', base: 'light', swatch: { app: '#f3f4f9', card: '#ffffff', accent: '#6757ea' } },
+  { id: 'dark', base: 'dark', swatch: { app: '#101014', card: '#1f1f28', accent: '#8f8cf2' } },
+  { id: 'ocean', base: 'dark', swatch: { app: '#0e1521', card: '#172331', accent: '#6197e4' } },
+  { id: 'ocean-light', base: 'light', swatch: { app: '#eef4fb', card: '#ffffff', accent: '#2e6da8' } },
+  { id: 'forest-dark', base: 'dark', swatch: { app: '#0c1610', card: '#15231a', accent: '#53bd85' } },
+  { id: 'forest', base: 'light', swatch: { app: '#ebf1e8', card: '#ffffff', accent: '#33834f' } },
+  { id: 'sand', base: 'light', swatch: { app: '#f7efe1', card: '#fffdf8', accent: '#a5652f' } },
+  { id: 'lavender', base: 'light', swatch: { app: '#efedf9', card: '#fcfbfe', accent: '#8b74e2' } },
 ]
 
 const BUILTIN_IDS = new Set<string>(BUILTIN_THEMES.map((t) => t.id))
@@ -54,6 +60,7 @@ export const DEFAULT_CONFIG: ThemeConfigV1 = {
   current: 'dark',
   lastLight: 'light',
   lastDark: 'dark',
+  style: 'studio',
   custom: null,
 }
 
@@ -65,6 +72,8 @@ export const DEFAULT_CUSTOM: CustomThemeConfig = {
   cardOpacity: 1,
   radius: 6,
   fontScale: 1,
+  density: 'default',
+  font: 'default',
 }
 
 const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i
@@ -136,8 +145,25 @@ function normalizeCustom(raw: unknown): CustomThemeConfig | null {
     cardOpacity: clamp(r.cardOpacity, 0, 1, DEFAULT_CUSTOM.cardOpacity),
     radius: clamp(r.radius, 0, 16, DEFAULT_CUSTOM.radius),
     fontScale: clamp(r.fontScale, 0.85, 1.3, DEFAULT_CUSTOM.fontScale),
+    density: normalizeDensity(r.density),
+    font: normalizeFont(r.font),
   }
   return custom
+}
+
+/** 密度取值归一：非法值回退 'default'（旧配置缺字段同样走默认）。 */
+function normalizeDensity(v: unknown): ThemeDensity {
+  return v === 'compact' || v === 'cozy' ? v : 'default'
+}
+
+/** 字体取值归一：非法值回退 'default'。 */
+function normalizeFont(v: unknown): ThemeFont {
+  return v === 'system' ? 'system' : 'default'
+}
+
+/** 视觉风格取值归一：非法值 / 旧配置缺省回退 'studio'。 */
+function normalizeStyle(v: unknown): ThemeStyle {
+  return v === 'minimal' || v === 'soft' ? v : 'studio'
 }
 
 /**
@@ -163,6 +189,7 @@ export function parseThemeConfig(raw: unknown): ThemeConfigV1 | null {
     current: pickId(r.current, DEFAULT_CONFIG.current),
     lastLight: pickId(r.lastLight, DEFAULT_CONFIG.lastLight),
     lastDark: pickId(r.lastDark, DEFAULT_CONFIG.lastDark),
+    style: normalizeStyle(r.style),
     custom,
   }
 }

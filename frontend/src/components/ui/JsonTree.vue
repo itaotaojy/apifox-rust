@@ -422,7 +422,7 @@ defineExpose({ expandAll, collapseAll, matchCount })
 <style scoped>
 .jt {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   line-height: 1.55;
 }
 
@@ -478,7 +478,7 @@ defineExpose({ expandAll, collapseAll, matchCount })
   margin: 0;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--text-2);
   cursor: pointer;
@@ -523,7 +523,7 @@ defineExpose({ expandAll, collapseAll, matchCount })
   height: 20px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--text-3);
   cursor: pointer;
@@ -567,14 +567,14 @@ defineExpose({ expandAll, collapseAll, matchCount })
 
 /* 查找高亮：普通匹配低对比，当前匹配高亮并描边。 */
 :deep(.jt-mark) {
-  background: var(--accent-tint, rgba(99, 102, 241, 0.25));
+  background: var(--accent-tint);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
 }
 :deep(.jt-mark.active) {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   outline: 1px solid var(--accent);
   outline-offset: 1px;
 }

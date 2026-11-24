@@ -13,16 +13,16 @@
  * - 消息日志上限 500 条（超限丢弃最旧）；卸载视图时自动断开，避免后台泄漏。
  */
 import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useMiyoApi } from '@/composables/useMiyoApi'
+import { useGoBack } from '@/composables/useGoBack'
 import { useToast } from '@/composables/useToast'
 import { useTauriEvent } from '@/composables/useTauriEvent'
 import { useLocaleStore } from '@/stores/locale'
 import { formatTime } from '@/utils/dateTime'
 import { toBase64Utf8, fromBase64Utf8Safe } from '@/utils/base64'
 import { lazyComponent } from '@/composables/lazyComponent'
-import Brand from '@/domains/workspace/components/Brand.vue'
+import PageHeader from '@/components/navigation/PageHeader.vue'
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
 import JsonTree from '@/components/ui/JsonTree.vue'
@@ -41,7 +41,6 @@ import { errorText } from '@/utils/errorText'
 /** JSON 模式编辑器（CodeMirror 较重，仅 JSON 模式挂载）。 */
 const JsonCodeMirror = lazyComponent(() => import('@/components/ui/JsonCodeMirror.vue'))
 
-const router = useRouter()
 const api = useMiyoApi()
 const toast = useToast()
 const locale = useLocaleStore()
@@ -66,14 +65,11 @@ async function detectWindow(): Promise<void> {
 /**
  * 返回来源页：实时调试可从工作区工具抽屉进入，也可从仪表板左侧导航进入，
  * 因此不能写死回 `/workspace`（从仪表板进来会被弹到某个项目里）。
+ * 统一走 useGoBack（第四阶段返回策略）：
  * - 会话内有可回退历史 → `router.back()`，原路返回调用方页面；
  * - 直接深链打开（浅历史，回退会离开应用）→ 回仪表板兜底。
- * `history.state.back` 是 vue-router 写入的历史标识：顶层页面为 null。
  */
-function goBack(): void {
-  if (window.history.state?.back) router.back()
-  else void router.push('/projects')
-}
+const goBack = useGoBack()
 
 async function popout(): Promise<void> {
   try {
@@ -153,7 +149,21 @@ watch(splitWidth, (w) => {
 })
 
 type MainTab = 'ws' | 'sse'
-const mainTab = ref<MainTab>('ws')
+/** 主页签持久化：刷新后回到上次模式（非法值回 ws）。 */
+const mainTab = ref<MainTab>((() => {
+  try {
+    return localStorage.getItem('miyo.realtime-tab') === 'sse' ? 'sse' : 'ws'
+  } catch {
+    return 'ws'
+  }
+})())
+watch(mainTab, (v) => {
+  try {
+    localStorage.setItem('miyo.realtime-tab', v)
+  } catch {
+    // 写失败静默
+  }
+})
 const MAIN_TABS = computed<SegmentOption[]>(() => [
   { value: 'ws', label: t('realtime.tabWs') },
   { value: 'sse', label: t('realtime.tabSse') },
@@ -699,7 +709,7 @@ function fmtElapsed(since: number | null): string {
 const wsElapsed = computed(() => fmtElapsed(wsOpenedAt.value))
 const sseElapsed = computed(() => fmtElapsed(sseOpenedAt.value))
 watch(
-  () => [wsState.value === 'open', sseStatus.value === 'open'],
+  [() => wsState.value === 'open', () => sseStatus.value === 'open'],
   ([wsOpen, sseOpen]) => {
     const need = wsOpen || sseOpen
     if (need && elapsedTimer === null) {
@@ -838,32 +848,32 @@ defineExpose({
 
 <template>
   <div class="rt-root">
-    <!-- 顶栏：macOS 交通灯落在品牌区上方（同 WorkspaceView / IntegrationView 惯例）；
-         整行 data-tauri-drag-region 可拖动窗口，交互子元素不受影响 -->
-    <div class="rt-top" data-tauri-drag-region>
-      <Brand v-if="isMainWindow" :title="t('realtime.windowTitle')" class="rt-brand" />
-      <template v-if="isMainWindow">
+    <!-- 顶栏：PageHeader 统一导航（macOS 主窗交通灯空间由 style.css 的
+         data-window 规则预留，仅主窗生效）；
+         弹出子窗（非主窗口）无 Brand / 返回语境，仅保留工作台上下文与状态 -->
+    <PageHeader
+      :title="t('realtime.windowTitle')"
+      :hide-brand="!isMainWindow"
+      :hide-back="!isMainWindow"
+      @back="goBack"
+    >
+      <SegmentedControl v-model="mainTab" :options="MAIN_TABS" size="sm" class="rt-seg" />
+      <template #actions>
         <IconButton
-          class="rt-back"
-          name="chevron-right"
-          :size="14"
-          :title="t('realtime.backHint')"
-          @click="goBack"
-        />
-        <IconButton
+          v-if="isMainWindow"
           name="monitor"
           :size="14"
           :title="t('realtime.popoutHint')"
           @click="popout"
         />
+        <div class="rt-status-wrap">
+          <Spinner v-if="wsConnecting || sseConnecting" />
+          <StatusBadge :tone="activeBadge.tone" :label="activeBadge.label" :dot="activeBadge.tone === 'run'" />
+        </div>
       </template>
-      <SegmentedControl v-model="mainTab" :options="MAIN_TABS" size="sm" class="rt-seg" />
-      <div class="rt-status-wrap">
-        <Spinner v-if="wsConnecting || sseConnecting" />
-        <StatusBadge :tone="activeBadge.tone" :label="activeBadge.label" :dot="activeBadge.tone === 'run'" />
-      </div>
-    </div>
+    </PageHeader>
 
+    <div class="rt-body">
     <!-- 连接条：URL + 动作 + 状态 / 耗时 / 收发统计 + 连接历史 -->
     <div class="rt-conn">
       <input
@@ -1151,6 +1161,7 @@ defineExpose({
         {{ t('editor.send') }}
       </button>
     </div>
+    </div>
   </div>
 </template>
 
@@ -1159,30 +1170,22 @@ defineExpose({
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 10px 14px 12px;
-  gap: 8px;
   min-height: 0;
 }
 
-/* ---- 顶栏 ---- */
-.rt-top {
+/* 顶栏之下主内容：原根容器内距与间距移入 body（顶栏通栏到底） */
+.rt-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  flex-shrink: 0;
-}
-.rt-brand {
-  margin-right: 4px;
-}
-/* 返回钮：chevron-right 旋转 180° 指向左（仓库内既有做法） */
-.rt-back :deep(svg) {
-  transform: rotate(180deg);
+  padding: 10px 14px 12px;
 }
 .rt-seg {
   margin-left: 8px;
 }
 .rt-status-wrap {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1302,7 +1305,7 @@ defineExpose({
   background: var(--accent);
 }
 .rt-switch input:disabled {
-  opacity: 0.5;
+  opacity: var(--opacity-disabled);
   cursor: default;
 }
 
