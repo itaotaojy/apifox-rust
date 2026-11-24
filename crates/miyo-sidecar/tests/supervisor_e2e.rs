@@ -137,26 +137,24 @@ async fn handshake_request_and_event_pipeline() {
 }
 
 /// 错误 token 场景由协议层拒绝——这里验证错误 sidecar（不回 hello_ack 的
-/// 伪进程）在握手超时内被拒。用 /bin/sleep 作为「非协议进程」。
+/// 伪进程）在握手超时内被拒。用 /bin/sleep 作为「非协议进程」，仅 Unix 可用。
+#[cfg(unix)]
 #[tokio::test]
 async fn handshake_rejects_non_protocol_process() {
     let sink = Arc::new(RecordingSink::default());
     let sup = fast_supervisor(Arc::clone(&sink));
     let mut wrong = spec("com.test.wrong", RestartPolicy::Off);
     // sleep 不说 sidecar 协议（stdout 无 hello_ack）→ 握手超时
-    #[cfg(unix)]
-    {
-        wrong.executable = std::path::PathBuf::from("/bin/sleep");
-        wrong.args = vec!["30".into()];
-        let err = sup.start(wrong).await.unwrap_err();
-        // user_message 是通用文案；Debug 载荷带具体原因（握手超时）
-        let debug = format!("{err:?}");
-        assert!(
-            debug.contains("握手超时") || debug.contains("hello_ack"),
-            "{debug}"
-        );
-        sup.shutdown_all().await;
-    }
+    wrong.executable = std::path::PathBuf::from("/bin/sleep");
+    wrong.args = vec!["30".into()];
+    let err = sup.start(wrong).await.unwrap_err();
+    // user_message 是通用文案；Debug 载荷带具体原因（握手超时）
+    let debug = format!("{err:?}");
+    assert!(
+        debug.contains("握手超时") || debug.contains("hello_ack"),
+        "{debug}"
+    );
+    sup.shutdown_all().await;
 }
 
 #[tokio::test]
