@@ -25,12 +25,21 @@ node scripts/release.mjs release minor --publish
 
 安全防护：工作区不干净直接拒绝执行；CI 侧另有「tag 与版本一致」门禁双保险。
 
-## 二、分步执行（等价手动流）
+## 二、本地打包（不发版）
 
-<details>
-<summary>展开：bump / check / tag 子命令与手工等价操作</summary>
+```bash
+node scripts/release.mjs build                  # 按当前版本打包当前平台
+node scripts/release.mjs build patch            # 先升版本再打包（只改本地文件，不提交）
+cd frontend && npm run build:release            # 等价写法
+```
 
-### bump —— 仅升级并同步版本文件
+- 产物在 `target/release/bundle/`；Windows 额外产出内嵌 WebView2 运行时的
+  `nsis/*-setup-offline.exe`（给无网/精简系统，约 200 MB），`--no-offline` 可跳过；
+- 签名私钥取 `TAURI_SIGNING_PRIVATE_KEY` 环境变量，其次 `~/.tauri/miyo-updater.key`；
+  都没有时跳过 updater 产物，安装包照常生成；
+- CI 打包仍走 `scripts/package-tauri.sh`，与本命令互不影响。
+
+## 三、仅同步版本文件
 
 ```bash
 node scripts/release.mjs bump <X.Y.Z | patch | minor | major>
@@ -41,22 +50,8 @@ node scripts/release.mjs bump <X.Y.Z | patch | minor | major>
 - updater 以 `tauri.conf.json` 的 `version` 作为当前客户端版本；
 - GitHub Actions 打包时读取同处版本号，写入产物名与 `latest.json`。
 
-### check —— 校验三处一致
-
-```bash
-node scripts/release.mjs check
-```
-
-### tag —— 校验后打标签触发构建
-
-```bash
-node scripts/release.mjs tag --push
-```
-
-打标前两道防护：三处版本必须一致；工作区必须 clean。
-tag 匹配 `v*` 触发 `release.yml`，CI 门禁会再复核一次。
-
-### 手工等价操作（不用脚本时）
+<details>
+<summary>展开：手工等价操作（不用脚本时）</summary>
 
 ```bash
 # 1) 手改三处：frontend/src-tauri/tauri.conf.json、frontend/package.json、
@@ -70,7 +65,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 </details>
 
-## 三、验证 CI 产出
+## 四、验证 CI 产出
 
 `release.yml` 会在各 OS 上跑 `tauri build`（Linux / macOS ARM / macOS Intel / Windows），汇总产物到 `release` job 生成 `latest.json`，最终创建 **Draft Release**。
 
@@ -99,7 +94,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 应用内「关于 → Check for Updates」，应弹出对应版本更新提示。
 
-## 四、踩坑清单
+## 五、踩坑清单
 
 - **版本号必须是合法 semver**。`latest.json` 里 `version` 字段会被 `semver` crate 解析，`"main"` 之类的值会直接报 `unexpected character` 错误（曾发生在 `workflow_dispatch` 手动触发、未传 tag 参数的场景）。
 - **tag 必须指向 bump 后的 commit**。先打 tag 再 bump → tag 指老 commit，发版后 tag 与 `main` HEAD 不一致。
@@ -107,7 +102,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - **未配置 `TAURI_SIGNING_PRIVATE_KEY` secret 前不要打 tag**。签名失败会导致各平台 tar.gz / AppImage / exe 缺一或无 `.sig`，`latest.json` 不完整。
 - **Draft Release 不发出去 = 发不了版**。CI 只创建 draft，最后一步 Publish 必须由人点（安全网，避免草稿也走签名流量）。
 
-## 五、命令速查
+## 六、命令速查
 
 ```bash
 # ⭐ 一条命令发版（升版本 → 检查 → 提交推送 → 打标签）
@@ -116,8 +111,9 @@ node scripts/release.mjs release patch
 # 自动等待构建完成并发布 Draft（需 gh CLI）
 node scripts/release.mjs release minor --publish
 
-# 仅同步版本文件 / 校验 / 单独打标
+# 本地打包当前平台（可选先升版本）
+node scripts/release.mjs build [patch]
+
+# 仅同步版本文件
 node scripts/release.mjs bump patch
-node scripts/release.mjs check
-node scripts/release.mjs tag --push
 ```

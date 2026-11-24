@@ -15,6 +15,7 @@ Miyo：Tauri 2 + Vue 3 的跨平台 API 调试工具（Rust 工作区 + 前端�
 
 - **release**：发布流程——CI success 前置 → `node scripts/release.mjs` 一键升版推送打 tag →
   轮询 Release workflow → draft release 转正。触发词：「发布 / 发版 / release / 打 tag」。
+  本地打包（不发版）用 `node scripts/release.mjs build`（= frontend 下 `npm run build:release`）。
 - **push**：推送流程——按 CI 同款门禁预检（根 workspace fmt/check/clippy/test、
   miyo-tauri check/test、前端 lint/test/build）→ 主题化提交 → 推送 → 监控 CI 直到绿。
   触发词：「推送 / push / 提交推送」。
