@@ -20,6 +20,7 @@ import JsonStructEditor from '@/domains/endpoint/components/design/design/JsonSt
 import CustomSelect from '@/components/ui/CustomSelect.vue'
 import Icon from '@/components/ui/Icon.vue'
 import IconButton from '@/components/ui/IconButton.vue'
+import KeyValueTable, { type KVRow } from '@/components/ui/KeyValueTable.vue'
 import Popconfirm from '@/components/ui/Popconfirm.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import Tabs from '@/components/ui/Tabs.vue'
@@ -305,6 +306,46 @@ const respEdits = ref<Map<string, string>>(new Map())
 /** 展开示例的结构化 docs 编辑缓冲（未保存；saveRespBody 一并提交）。 */
 const respDocsEdits = ref<Map<string, Record<string, FieldDoc>>>(new Map())
 
+/** header 行缓冲：按示例 id 物化（行对象身份稳定，KeyValueTable 输入不丢焦点）。 */
+const respHeaderEdits = ref<Map<string, KVRow[]>>(new Map())
+
+function headerRowsFrom(ex: ResponseExample): KVRow[] {
+  return Object.entries(ex.headers).map(([key, value]) => ({ key, value, enabled: true, description: '' }))
+}
+
+function respHeaderRowsOf(ex: ResponseExample): KVRow[] {
+  let rows = respHeaderEdits.value.get(ex.id)
+  if (!rows) {
+    rows = headerRowsFrom(ex)
+    respHeaderEdits.value.set(ex.id, rows)
+  }
+  return rows
+}
+
+function onRespHeadersEdit(ex: ResponseExample, rows: KVRow[]): void {
+  respHeaderEdits.value.set(ex.id, rows)
+}
+
+/** 行 → headers 映射（丢弃无键名行，键名 trim）。 */
+function rowsToHeaderMap(rows: KVRow[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const r of rows) {
+    const key = (r.key ?? '').trim()
+    if (key) out[key] = r.value ?? ''
+  }
+  return out
+}
+
+/** headers 是否有未保存修改（行数或键值与已存 headers 不一致）。 */
+function respHeadersDirty(ex: ResponseExample): boolean {
+  const rows = respHeaderRowsOf(ex)
+  const entries = Object.entries(ex.headers)
+  if (rows.length !== entries.length) return true
+  return rows.some(
+    (r, i) => (r.key ?? '').trim() !== entries[i][0].trim() || (r.value ?? '') !== entries[i][1],
+  )
+}
+
 function respTextOf(ex: ResponseExample): string {
   const editing = respEdits.value.get(ex.id)
   if (editing !== undefined) return editing
@@ -370,6 +411,7 @@ watch(
   () => {
     respEdits.value.clear()
     respDocsEdits.value.clear()
+    respHeaderEdits.value.clear()
   },
 )
 
@@ -443,7 +485,7 @@ async function addResponse(preset?: number): Promise<void> {
 async function saveRespBody(ex: ResponseExample): Promise<void> {
   const text = respEdits.value.get(ex.id)
   const docs = respDocsEdits.value.get(ex.id)
-  if (text === undefined && docs === undefined) return
+  if (text === undefined && docs === undefined && !respHeadersDirty(ex)) return
   const body = text ?? ex.body
   try {
     if (body.trim()) JSON.parse(body) // 仅校验，不强制格式化
@@ -458,6 +500,7 @@ async function saveRespBody(ex: ResponseExample): Promise<void> {
     const saved = await api.saveExample({
       ...ex,
       body,
+      headers: rowsToHeaderMap(respHeaderRowsOf(ex)),
       ...(docs !== undefined ? { docs } : {}),
       updated_at: new Date().toISOString(),
     })
@@ -903,11 +946,24 @@ onBeforeUnmount(() => {
                   @input="onRespEdit(ex, ($event.target as HTMLTextAreaElement).value)"
                   @keydown="onCodeKeydown"
                 ></textarea>
+                <div class="resp-headers">
+                  <div class="resp-headers-title">
+                    {{ t('design.respHeaders') }}
+                    <span class="resp-headers-count">{{ respHeaderRowsOf(ex).length }}</span>
+                  </div>
+                  <KeyValueTable
+                    :model-value="respHeaderRowsOf(ex)"
+                    :show-enable="false"
+                    :show-description="false"
+                    :key-placeholder="t('design.headerNamePh')"
+                    @update:model-value="onRespHeadersEdit(ex, $event)"
+                  />
+                </div>
                 <div class="resp-actions">
                   <button
                     type="button"
                     class="miyo-btn miyo-btn-sm"
-                    :disabled="!respEdits.has(ex.id) && !respDocsEdits.has(ex.id)"
+                    :disabled="!respEdits.has(ex.id) && !respDocsEdits.has(ex.id) && !respHeadersDirty(ex)"
                     @click="saveRespBody(ex)"
                   >
                     <Icon name="save" :size="12" /> {{ t('design.saveChanges') }}
@@ -1345,6 +1401,26 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 响应 Headers 编辑：小标题 + 仅键/值两列的 KV 表 */
+.resp-headers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resp-headers-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.resp-headers-count {
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
 }
 
 .resp-empty {

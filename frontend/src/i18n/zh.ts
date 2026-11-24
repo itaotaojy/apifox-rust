@@ -1341,6 +1341,7 @@ export const zh = {
   'design.mockCountEmpty': '数组需要至少一个样本元素才能生成多条',
   'design.responses': '返回响应 (Responses)',
   'design.respBodyPh': '响应 Body 示例，例如 { "code": 0 }',
+  'design.respHeaders': '响应 Headers',
   'design.saveChanges': '保存修改',
   'design.deleteRespConfirm': '删除 {v} 响应？',
   'design.deleteResp': '删除该响应',

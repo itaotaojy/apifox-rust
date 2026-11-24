@@ -1346,6 +1346,7 @@ export const en: Record<ZhKey, string> = {
   'design.mockCountEmpty': 'Add at least one sample element to generate multiple items',
   'design.responses': 'Responses',
   'design.respBodyPh': 'Response body example, e.g. { "code": 0 }',
+  'design.respHeaders': 'Response Headers',
   'design.saveChanges': 'Save changes',
   'design.deleteRespConfirm': 'Delete {v} response?',
   'design.deleteResp': 'Delete this response',

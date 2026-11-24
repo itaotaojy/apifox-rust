@@ -399,4 +399,38 @@ describe('DesignPanel：返回响应 (Responses)', () => {
     expect(apiMock.saveExample.mock.calls[0][0].name).toBe('400 响应')
     expect((wrapper.find('.resp-name-input').element as HTMLInputElement).value).toBe('我的错误')
   })
+
+  it('响应 Headers 表：已有 header 行展示，编辑键名后保存写回 headers', async () => {
+    storeMock.setExamples([['ep-1', [example({ headers: { 'X-Req-Id': 'a1' } })]]])
+    const wrapper = mountPanel()
+
+    const keyInput = wrapper.find('.resp-editor .kvt-input.kvt-key')
+    expect((keyInput.element as HTMLInputElement).value).toBe('X-Req-Id')
+
+    await keyInput.setValue('X-Req-Id-2')
+    await wrapper.find('.resp-actions .miyo-btn').trigger('click')
+    await flushPromises()
+
+    expect(apiMock.saveExample.mock.calls[0][0].headers).toEqual({ 'X-Req-Id-2': 'a1' })
+    expect(storeMock.examples.get('ep-1')![0].headers).toEqual({ 'X-Req-Id-2': 'a1' })
+  })
+
+  it('响应 Headers 表：新增行保存写回 headers', async () => {
+    storeMock.setExamples([['ep-1', [example()]]])
+    const wrapper = mountPanel()
+
+    await wrapper.find('.resp-editor .kvt-add').trigger('click')
+    await wrapper.find('.resp-editor .kvt-input.kvt-key').setValue('X-Mock')
+    await wrapper.find('.resp-editor .kvt-input.kvt-value').setValue('on')
+    await wrapper.find('.resp-actions .miyo-btn').trigger('click')
+    await flushPromises()
+
+    expect(apiMock.saveExample.mock.calls[0][0].headers).toEqual({ 'X-Mock': 'on' })
+  })
+
+  it('headers 未修改时保存按钮保持禁用', () => {
+    storeMock.setExamples([['ep-1', [example({ headers: { 'X-A': '1' } })]]])
+    const wrapper = mountPanel()
+    expect((wrapper.find('.resp-actions .miyo-btn').element as HTMLButtonElement).disabled).toBe(true)
+  })
 })
